@@ -26,7 +26,7 @@ async function refreshAgentRuns() {
   const data = await res.json();
   const items = data.items || [];
   if (!items.length) {
-    agentRunsBox.textContent = "Пока нет запусков автономного цикла.";
+    agentRunsBox.textContent = "Запуски автономного цикла: пока нет записей.";
     return;
   }
   agentRunsBox.textContent = items
@@ -60,10 +60,10 @@ async function refreshAgentQueue() {
   const data = await res.json();
   const items = data.items || [];
   if (!items.length) {
-    queueBox.textContent = "Очередь пуста.";
+    queueBox.textContent = "Очередь воркера пуста.";
     return;
   }
-  queueBox.textContent = items
+  queueBox.textContent = "Очередь воркера:\n\n" + items
     .map(
       (q) =>
         `#${q.id} [${q.status}] prio=${q.priority} tries=${q.attempts}/${q.target_iterations}\n` +
@@ -147,21 +147,24 @@ queueForm.addEventListener("submit", async (e) => {
 });
 
 workerStartBtn.addEventListener("click", async () => {
-  await fetch("/api/admin/agent/worker", {
+  const res = await fetch("/api/admin/agent/worker", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled: true }),
   });
+  if (!res.ok) alert("Не удалось запустить воркер");
   await refreshWorkerStatus();
   await refreshAudit();
+  await refreshAgentQueue();
 });
 
 workerStopBtn.addEventListener("click", async () => {
-  await fetch("/api/admin/agent/worker", {
+  const res = await fetch("/api/admin/agent/worker", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled: false }),
   });
+  if (!res.ok) alert("Не удалось остановить воркер");
   await refreshWorkerStatus();
   await refreshAudit();
 });
@@ -171,3 +174,9 @@ refreshAudit();
 refreshAgentRuns();
 refreshAgentQueue();
 refreshWorkerStatus();
+
+setInterval(() => {
+  refreshAgentRuns();
+  refreshAgentQueue();
+  refreshWorkerStatus();
+}, 5000);

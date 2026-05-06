@@ -8,8 +8,8 @@
   </head>
   <body>
     <main class="container">
-      <h1>Admin Panel</h1>
-      <p class="subtitle">Управление пользователями и audit log</p>
+      <h1>Панель администратора</h1>
+      <p class="subtitle">Управление пользователями, аудитом и автономным воркером</p>
 
       <section class="controls">
         <a href="/">К чату</a>
@@ -34,12 +34,12 @@
       </section>
 
       <section>
-        <h3>Audit logs</h3>
+        <h3>Журнал аудита</h3>
         <pre id="audit-box" class="chat"></pre>
       </section>
 
       <section>
-        <h3>Autonomous cycle</h3>
+        <h3>Автономный цикл</h3>
         <form id="agent-run-form" class="chat-form">
           <input id="goal-input" type="text" placeholder="Цель цикла (например: улучшить обработку ошибок API)" required />
           <select id="agent-provider">
@@ -70,6 +70,7 @@
           <button id="worker-start-btn" type="button">Старт воркера</button>
           <button id="worker-stop-btn" type="button">Стоп воркера</button>
         </section>
+        <p class="subtitle">После добавления цели нажми "Старт воркера". Статус обновляется автоматически.</p>
         <pre id="worker-status-box" class="chat"></pre>
         <pre id="agent-runs-box" class="chat"></pre>
         <pre id="agent-queue-box" class="chat"></pre>
