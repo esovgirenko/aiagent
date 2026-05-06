@@ -215,6 +215,7 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
                     "Отвечай строго на русском языке.\n"
                     "По этому плану дай следующее конкретное действие для выполнения прямо сейчас.\n"
                     "Важно: действие должно ОТЛИЧАТЬСЯ от прошлых неуспешных попыток.\n"
+                    "Не предлагай команды интерфейса вроде /version, если нет гарантии, что они доступны в этой среде.\n"
                     f"Прошлые попытки:\n{history_text}\n"
                     f"Новый план:\n{plan_text}"
                 ),
@@ -239,7 +240,12 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
     )
     execution_text = ""
     try:
-        action_obj = json.loads(exec_plan_raw)
+        raw = exec_plan_raw.strip()
+        try:
+            action_obj = json.loads(raw)
+        except json.JSONDecodeError:
+            # Fallback: model may answer in prose; default to llm_query execution.
+            action_obj = {"action_type": "llm_query", "action_input": action_text}
         a_type = str(action_obj.get("action_type", "none")).strip()
         a_input = str(action_obj.get("action_input", "")).strip()
         if a_type == "llm_query" and a_input:
