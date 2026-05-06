@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import shlex
 import subprocess
 import time
