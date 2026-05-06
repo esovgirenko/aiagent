@@ -148,6 +148,13 @@ MVP-проект агента с веб-интерфейсом, который:
 - Worker публикует периодический health-summary в `audit_logs`:
   - total/success/fail/success_rate за период `AUTONOMY_SUMMARY_INTERVAL_SEC`.
 - В admin UI доступна кнопка "Сбросить метрики" воркера.
+- Добавлен Policy Engine:
+  - оценка риска действия (`low/medium/high`),
+  - high-risk действия отправляются в `approval_queue` и требуют ручного решения.
+- Добавлены наблюдаемость и экспорт:
+  - `GET /api/admin/agent/kpi`
+  - фильтры runs по `verify/provider`
+  - `GET /api/admin/agent/runs.csv` (экспорт).
 
 ## Streaming
 

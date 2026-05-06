@@ -39,6 +39,16 @@
       </section>
 
       <section>
+        <h3>KPI и approvals</h3>
+        <section class="controls">
+          <button id="kpi-refresh-btn" type="button">Обновить KPI</button>
+          <button id="approvals-refresh-btn" type="button">Обновить approvals</button>
+        </section>
+        <pre id="kpi-box" class="chat"></pre>
+        <pre id="approvals-box" class="chat"></pre>
+      </section>
+
+      <section>
         <h3>Автономный цикл</h3>
         <form id="agent-run-form" class="chat-form">
           <input id="goal-input" type="text" placeholder="Цель цикла (например: улучшить обработку ошибок API)" required />
@@ -73,6 +83,23 @@
           <button id="queue-clear-btn" type="button">Очистить очередь</button>
         </section>
         <p class="subtitle">После добавления цели нажми "Старт воркера". Статус обновляется автоматически.</p>
+        <section class="controls">
+          <label for="runs-verify-filter">Фильтр verify:</label>
+          <select id="runs-verify-filter">
+            <option value="">all</option>
+            <option value="PASS">PASS</option>
+            <option value="FAIL">FAIL</option>
+          </select>
+          <label for="runs-provider-filter">Провайдер:</label>
+          <select id="runs-provider-filter">
+            <option value="">all</option>
+            <option value="gigachat">gigachat</option>
+            <option value="openai">openai</option>
+            <option value="ollama">ollama</option>
+          </select>
+          <button id="runs-filter-btn" type="button">Применить фильтр</button>
+          <a href="/api/admin/agent/runs.csv" target="_blank" rel="noreferrer">Экспорт CSV</a>
+        </section>
         <pre id="worker-status-box" class="chat"></pre>
         <pre id="agent-runs-box" class="chat"></pre>
         <pre id="agent-queue-box" class="chat"></pre>

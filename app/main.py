@@ -1,5 +1,7 @@
 import asyncio
+import csv
 import json
+import io
 import re
 import shlex
 import subprocess
@@ -8,7 +10,7 @@ from pathlib import Path
 from typing import AsyncIterator, Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -17,6 +19,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .llm_clients import get_client
 from .storage import (
+    decide_approval,
+    enqueue_approval,
+    get_worker_kpi,
     clear_queue,
     create_goal_task,
     create_user,
@@ -29,7 +34,9 @@ from .storage import (
     get_user,
     init_db,
     list_autonomous_runs,
+    list_approvals,
     list_audit_logs,
+    list_autonomous_runs_filtered,
     list_goal_run_history,
     list_goal_tasks,
     list_queue_items,
@@ -79,6 +86,12 @@ class AgentRunRequest(BaseModel):
 
 class AgentWorkerRequest(BaseModel):
     enabled: bool
+
+
+class ApprovalDecisionRequest(BaseModel):
+    approval_id: int
+    approve: bool
+    note: str = ""
 
 
 _RATE_BUCKETS: dict[str, list[float]] = {}
@@ -205,6 +218,26 @@ def _fallback_action_for_attempt(goal: str, attempt_no: int) -> str:
     return strategies[idx]
 
 
+def _run_skill(goal: str, attempt_no: int) -> tuple[str, str]:
+    g = goal.lower()
+    if "верси" in g:
+        cmd = "python3 --version" if attempt_no % 2 == 1 else "uname -a"
+        return ("shell_safe", cmd)
+    if "api" in g or "ошиб" in g:
+        return ("llm_query", f"Сформируй проверяемый чеклист диагностики для цели: {goal}")
+    return ("llm_query", f"Выполни аналитический следующий шаг для цели: {goal}")
+
+
+def _risk_level(action_type: str, action_input: str) -> str:
+    text = action_input.lower()
+    dangerous = ("rm ", "drop ", "truncate ", "shutdown", "reboot", "delete")
+    if any(d in text for d in dangerous):
+        return "high"
+    if action_type == "shell_safe":
+        return "medium"
+    return "low"
+
+
 async def run_autonomous_cycle(
     goal: str, provider: str, goal_id: int | None = None, attempt_no: int = 1
 ) -> dict:
@@ -262,38 +295,16 @@ async def run_autonomous_cycle(
     # Hard anti-loop guard: forbid repeated action and /version pseudo-command.
     if "/version" in action_text.lower() or _is_repeated_action(action_text, history_items):
         action_text = _fallback_action_for_attempt(goal, attempt_no)
-    exec_plan_raw = await client.chat(
-        [
-            {
-                "role": "user",
-                "content": (
-                    "Отвечай строго JSON без markdown. "
-                    "Сформируй исполняемое действие в формате "
-                    '{"action_type":"llm_query|shell_safe|none","action_input":"..."}.\n'
-                    "Для shell_safe разрешены только безопасные команды чтения:\n"
-                    "python --version, python3 --version, uname -a.\n"
-                    "Для остальных случаев используй llm_query.\n"
-                    f"Цель: {goal}\nПлан: {plan_text}\nДействие: {action_text}"
-                ),
-            }
-        ]
-    )
+    action_type, action_input = _run_skill(goal, attempt_no)
+    risk = _risk_level(action_type, action_input)
     execution_text = ""
     try:
-        raw = exec_plan_raw.strip()
-        try:
-            action_obj = json.loads(raw)
-        except json.JSONDecodeError:
-            # Fallback: model may answer in prose; default to llm_query execution.
-            action_obj = {"action_type": "llm_query", "action_input": action_text}
-        a_type = str(action_obj.get("action_type", "none")).strip()
-        a_input = str(action_obj.get("action_input", "")).strip()
-        if a_type == "llm_query" and a_input:
-            execution_text = await client.chat([{"role": "user", "content": a_input}])
-        elif a_type == "shell_safe" and a_input:
+        if action_type == "llm_query" and action_input:
+            execution_text = await client.chat([{"role": "user", "content": action_input}])
+        elif action_type == "shell_safe" and action_input:
             safe_commands = {"python --version", "python3 --version", "uname -a"}
-            if a_input in safe_commands:
-                out = subprocess.run(shlex.split(a_input), capture_output=True, text=True, timeout=10)
+            if action_input in safe_commands:
+                out = subprocess.run(shlex.split(action_input), capture_output=True, text=True, timeout=10)
                 execution_text = (out.stdout or out.stderr).strip()[:1500]
             else:
                 execution_text = "Команда отклонена политикой безопасности."
@@ -354,6 +365,9 @@ async def run_autonomous_cycle(
         "execution_text": execution_text,
         "verify_status": verify_status,
         "reflection_text": reflection_text,
+        "risk_level": risk,
+        "executed_action_type": action_type,
+        "executed_action_input": action_input,
     }
 
 
@@ -388,6 +402,10 @@ async def _autonomy_worker_loop() -> None:
             task_id = create_goal_task(goal_id, f"Auto cycle action for: {goal}", priority=1)
             result = await run_autonomous_cycle(goal, provider, goal_id=goal_id, attempt_no=current_attempt)
             is_success = result["verify_status"] == "PASS" and result["result_text"].strip().upper() != "НЕТ ДАННЫХ"
+            if result["risk_level"] == "high":
+                enqueue_approval(goal_id, created_by, "high", result["executed_action_input"])
+                mark_queue_item_failed(queue_id, "Awaiting manual approval for high-risk action")
+                continue
             if is_success:
                 mark_task_done(task_id)
             run_id = save_autonomous_run(
@@ -685,6 +703,9 @@ async def admin_clear_queue(request: Request, _: None = Depends(require_admin)) 
 
 @app.get("/api/admin/agent/runs")
 async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    verify_filter = str(request.query_params.get("verify", ""))
+    provider_filter = str(request.query_params.get("provider", ""))
+    rows = list_autonomous_runs_filtered(limit=100, verify_status=verify_filter, provider=provider_filter)
     items = [
         {
             "id": run_id,
@@ -698,7 +719,7 @@ async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -
             "reflection_text": reflection_text,
             "created_at": created_at,
         }
-        for run_id, goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_at in list_autonomous_runs(30)
+        for run_id, goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_at in rows
     ]
     return JSONResponse({"items": items})
 
@@ -801,6 +822,57 @@ async def admin_agent_worker_status(request: Request, _: None = Depends(require_
             "summary_interval_sec": settings.autonomy_summary_interval_sec,
         }
     )
+
+
+@app.get("/api/admin/agent/kpi")
+async def admin_agent_kpi(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    passed, failed, rate = get_worker_kpi()
+    return JSONResponse({"passed": passed, "failed": failed, "success_rate": round(rate, 2)})
+
+
+@app.get("/api/admin/approvals")
+async def admin_approvals(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    status = str(request.query_params.get("status", "pending"))
+    items = [
+        {
+            "id": aid,
+            "goal_id": goal_id,
+            "requested_by": requested_by,
+            "risk_level": risk_level,
+            "action_text": action_text,
+            "status": st,
+            "created_at": created_at,
+        }
+        for aid, goal_id, requested_by, risk_level, action_text, st, created_at in list_approvals(status=status, limit=100)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/admin/approvals/decide")
+async def admin_approvals_decide(
+    payload: ApprovalDecisionRequest, request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
+    decide_approval(payload.approval_id, payload.approve, _username(request), payload.note)
+    save_audit_log(
+        _username(request),
+        "admin_approval_decision",
+        request.client.host if request.client else "unknown",
+        f"id={payload.approval_id},approve={payload.approve}",
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/admin/agent/runs.csv")
+async def admin_agent_runs_csv(request: Request, _: None = Depends(require_admin)) -> PlainTextResponse:
+    rows = list_autonomous_runs_filtered(limit=500)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        ["id", "goal_id", "provider", "result_text", "execution_text", "plan_text", "action_text", "verify_status", "reflection_text", "created_at"]
+    )
+    for row in rows:
+        writer.writerow(list(row))
+    return PlainTextResponse(buf.getvalue(), media_type="text/csv")
 
 
 @app.get("/api/admin/agent/goals/{goal_id}/tasks")

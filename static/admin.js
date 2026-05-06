@@ -10,6 +10,13 @@ const workerStartBtn = document.getElementById("worker-start-btn");
 const workerStopBtn = document.getElementById("worker-stop-btn");
 const workerResetBtn = document.getElementById("worker-reset-btn");
 const queueClearBtn = document.getElementById("queue-clear-btn");
+const kpiBox = document.getElementById("kpi-box");
+const approvalsBox = document.getElementById("approvals-box");
+const kpiRefreshBtn = document.getElementById("kpi-refresh-btn");
+const approvalsRefreshBtn = document.getElementById("approvals-refresh-btn");
+const runsFilterBtn = document.getElementById("runs-filter-btn");
+const runsVerifyFilter = document.getElementById("runs-verify-filter");
+const runsProviderFilter = document.getElementById("runs-provider-filter");
 
 async function refreshUsers() {
   const res = await fetch("/api/admin/users");
@@ -24,7 +31,9 @@ async function refreshAudit() {
 }
 
 async function refreshAgentRuns() {
-  const res = await fetch("/api/admin/agent/runs");
+  const verify = encodeURIComponent(runsVerifyFilter.value || "");
+  const provider = encodeURIComponent(runsProviderFilter.value || "");
+  const res = await fetch(`/api/admin/agent/runs?verify=${verify}&provider=${provider}`);
   const data = await res.json();
   const items = data.items || [];
   if (!items.length) {
@@ -58,6 +67,28 @@ async function refreshAgentRuns() {
       ].join("\n");
     })
     .join("\n");
+}
+
+async function refreshKpi() {
+  const res = await fetch("/api/admin/agent/kpi");
+  const data = await res.json();
+  kpiBox.textContent =
+    `PASS: ${data.passed}\n` +
+    `FAIL: ${data.failed}\n` +
+    `Success rate: ${data.success_rate}%`;
+}
+
+async function refreshApprovals() {
+  const res = await fetch("/api/admin/approvals?status=pending");
+  const data = await res.json();
+  const items = data.items || [];
+  if (!items.length) {
+    approvalsBox.textContent = "Pending approvals: none";
+    return;
+  }
+  approvalsBox.textContent = items
+    .map((a) => `#${a.id} goal_id=${a.goal_id} risk=${a.risk_level}\nby=${a.requested_by}\naction=${a.action_text}`)
+    .join("\n\n");
 }
 
 async function refreshAgentQueue() {
@@ -197,11 +228,17 @@ queueClearBtn.addEventListener("click", async () => {
   await refreshAudit();
 });
 
+kpiRefreshBtn.addEventListener("click", refreshKpi);
+approvalsRefreshBtn.addEventListener("click", refreshApprovals);
+runsFilterBtn.addEventListener("click", refreshAgentRuns);
+
 refreshUsers();
 refreshAudit();
 refreshAgentRuns();
 refreshAgentQueue();
 refreshWorkerStatus();
+refreshKpi();
+refreshApprovals();
 
 setInterval(() => {
   refreshAgentRuns();

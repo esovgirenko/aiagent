@@ -127,6 +127,23 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS approval_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal_id INTEGER NOT NULL,
+                requested_by TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                action_text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                reviewer TEXT DEFAULT '',
+                decision_note TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                decided_at TIMESTAMP,
+                FOREIGN KEY(goal_id) REFERENCES goals(id)
+            )
+            """
+        )
         conn.commit()
         # Lightweight migration for older DBs created before role/is_active fields.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -530,3 +547,95 @@ def clear_queue() -> int:
         cur = conn.execute("DELETE FROM autonomy_queue WHERE status IN ('queued','running','failed','done')")
         conn.commit()
         return int(cur.rowcount or 0)
+
+
+def enqueue_approval(goal_id: int, requested_by: str, risk_level: str, action_text: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO approval_queue(goal_id, requested_by, risk_level, action_text)
+            VALUES (?, ?, ?, ?)
+            """,
+            (goal_id, requested_by, risk_level, action_text),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_approvals(status: str = "pending", limit: int = 100) -> List[Tuple[int, int, str, str, str, str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, goal_id, requested_by, risk_level, action_text, status, created_at
+            FROM approval_queue
+            WHERE status = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (status, limit),
+        ).fetchall()
+    return [(int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6])) for r in rows]
+
+
+def decide_approval(approval_id: int, approve: bool, reviewer: str, note: str = "") -> None:
+    status = "approved" if approve else "rejected"
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            UPDATE approval_queue
+            SET status = ?, reviewer = ?, decision_note = ?, decided_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, reviewer, note[:500], approval_id),
+        )
+        conn.commit()
+
+
+def get_worker_kpi() -> Tuple[int, int, float]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT verify_status, COUNT(*)
+            FROM autonomous_runs
+            GROUP BY verify_status
+            """
+        ).fetchall()
+    passed = 0
+    failed = 0
+    for status, cnt in rows:
+        if str(status).upper() == "PASS":
+            passed += int(cnt)
+        else:
+            failed += int(cnt)
+    total = passed + failed
+    rate = (100.0 * passed / total) if total else 0.0
+    return passed, failed, rate
+
+
+def list_autonomous_runs_filtered(
+    limit: int = 100,
+    verify_status: str = "",
+    provider: str = "",
+) -> List[Tuple[int, int, str, str, str, str, str, str, str, str]]:
+    query = """
+        SELECT id, goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_at
+        FROM autonomous_runs
+    """
+    clauses = []
+    args: list[object] = []
+    if verify_status:
+        clauses.append("verify_status = ?")
+        args.append(verify_status)
+    if provider:
+        clauses.append("provider = ?")
+        args.append(provider)
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(query, tuple(args)).fetchall()
+    return [
+        (int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]), str(r[7]), str(r[8]), str(r[9]))
+        for r in rows
+    ]
