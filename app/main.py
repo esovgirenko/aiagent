@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -15,7 +16,9 @@ from .llm_clients import get_client
 from .storage import (
     create_goal_task,
     create_user,
+    enqueue_autonomy_goal,
     ensure_default_user,
+    fetch_next_queued_goal,
     get_or_create_active_goal,
     get_feedback_summary,
     get_recent_memories,
@@ -24,7 +27,10 @@ from .storage import (
     list_autonomous_runs,
     list_audit_logs,
     list_goal_tasks,
+    list_queue_items,
     list_users,
+    mark_queue_item_done,
+    mark_queue_item_failed,
     mark_task_done,
     save_audit_log,
     save_autonomous_run,
@@ -62,7 +68,14 @@ class AgentRunRequest(BaseModel):
     provider: Literal["openai", "ollama", "gigachat"] = "gigachat"
 
 
+class AgentWorkerRequest(BaseModel):
+    enabled: bool
+
+
 _RATE_BUCKETS: dict[str, list[float]] = {}
+_AUTONOMY_WORKER_ENABLED = False
+_AUTONOMY_WORKER_TASK: asyncio.Task | None = None
+_AUTONOMY_ITERATIONS = 0
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -78,6 +91,19 @@ def on_startup() -> None:
     init_db()
     default_password = settings.default_password or settings.auth_password
     ensure_default_user(settings.default_username, default_password)
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    global _AUTONOMY_WORKER_ENABLED, _AUTONOMY_WORKER_TASK
+    _AUTONOMY_WORKER_ENABLED = False
+    if _AUTONOMY_WORKER_TASK:
+        _AUTONOMY_WORKER_TASK.cancel()
+        try:
+            await _AUTONOMY_WORKER_TASK
+        except BaseException:
+            pass
+        _AUTONOMY_WORKER_TASK = None
 
 
 def build_system_prompt() -> str:
@@ -194,6 +220,38 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
         "verify_status": verify_status,
         "reflection_text": reflection_text,
     }
+
+
+async def _autonomy_worker_loop() -> None:
+    global _AUTONOMY_ITERATIONS
+    while _AUTONOMY_WORKER_ENABLED and _AUTONOMY_ITERATIONS < settings.autonomy_max_iterations:
+        item = fetch_next_queued_goal()
+        if not item:
+            await asyncio.sleep(settings.autonomy_interval_sec)
+            continue
+        queue_id, goal, provider, created_by = item
+        try:
+            goal_id = get_or_create_active_goal(goal, created_by)
+            task_id = create_goal_task(goal_id, f"Auto cycle action for: {goal}", priority=1)
+            result = await run_autonomous_cycle(goal, provider)
+            if result["verify_status"] == "PASS":
+                mark_task_done(task_id)
+            run_id = save_autonomous_run(
+                goal_id=goal_id,
+                provider=provider,
+                plan_text=result["plan_text"],
+                action_text=result["action_text"],
+                verify_status=result["verify_status"],
+                reflection_text=result["reflection_text"],
+                created_by=created_by,
+            )
+            mark_queue_item_done(queue_id)
+            _AUTONOMY_ITERATIONS += 1
+            save_audit_log(created_by, "autonomy_worker_cycle", "worker", f"queue_id={queue_id},run_id={run_id}")
+        except Exception as exc:
+            mark_queue_item_failed(queue_id, str(exc))
+            save_audit_log(created_by, "autonomy_worker_failed", "worker", f"queue_id={queue_id}:{exc}")
+            await asyncio.sleep(1)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -406,6 +464,20 @@ async def admin_run_cycle(
     return JSONResponse({"ok": True, "run_id": run_id, "goal_id": goal_id, **result})
 
 
+@app.post("/api/admin/agent/queue")
+async def admin_queue_goal(
+    payload: AgentRunRequest, request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
+    queue_id = enqueue_autonomy_goal(payload.goal, payload.provider, _username(request))
+    save_audit_log(
+        _username(request),
+        "admin_agent_queue_goal",
+        request.client.host if request.client else "unknown",
+        f"queue_id={queue_id}",
+    )
+    return JSONResponse({"ok": True, "queue_id": queue_id})
+
+
 @app.get("/api/admin/agent/runs")
 async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
     items = [
@@ -422,6 +494,63 @@ async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -
         for run_id, goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_at in list_autonomous_runs(30)
     ]
     return JSONResponse({"items": items})
+
+
+@app.get("/api/admin/agent/queue")
+async def admin_agent_queue(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    items = [
+        {
+            "id": qid,
+            "goal": goal,
+            "provider": provider,
+            "status": status,
+            "created_by": created_by,
+            "last_error": last_error,
+            "created_at": created_at,
+        }
+        for qid, goal, provider, status, created_by, last_error, created_at in list_queue_items(100)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/admin/agent/worker")
+async def admin_agent_worker(
+    payload: AgentWorkerRequest, request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
+    global _AUTONOMY_WORKER_ENABLED, _AUTONOMY_WORKER_TASK, _AUTONOMY_ITERATIONS
+    if payload.enabled:
+        _AUTONOMY_WORKER_ENABLED = True
+        _AUTONOMY_ITERATIONS = 0
+        if not _AUTONOMY_WORKER_TASK or _AUTONOMY_WORKER_TASK.done():
+            _AUTONOMY_WORKER_TASK = asyncio.create_task(_autonomy_worker_loop())
+        save_audit_log(_username(request), "admin_agent_worker_start", request.client.host if request.client else "unknown")
+    else:
+        _AUTONOMY_WORKER_ENABLED = False
+        if _AUTONOMY_WORKER_TASK and not _AUTONOMY_WORKER_TASK.done():
+            _AUTONOMY_WORKER_TASK.cancel()
+        save_audit_log(_username(request), "admin_agent_worker_stop", request.client.host if request.client else "unknown")
+    return JSONResponse(
+        {
+            "ok": True,
+            "enabled": _AUTONOMY_WORKER_ENABLED,
+            "iterations": _AUTONOMY_ITERATIONS,
+            "max_iterations": settings.autonomy_max_iterations,
+        }
+    )
+
+
+@app.get("/api/admin/agent/worker")
+async def admin_agent_worker_status(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    running = bool(_AUTONOMY_WORKER_TASK and not _AUTONOMY_WORKER_TASK.done() and _AUTONOMY_WORKER_ENABLED)
+    return JSONResponse(
+        {
+            "enabled": _AUTONOMY_WORKER_ENABLED,
+            "running": running,
+            "iterations": _AUTONOMY_ITERATIONS,
+            "max_iterations": settings.autonomy_max_iterations,
+            "interval_sec": settings.autonomy_interval_sec,
+        }
+    )
 
 
 @app.get("/api/admin/agent/goals/{goal_id}/tasks")

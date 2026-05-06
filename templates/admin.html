@@ -49,7 +49,22 @@
           </select>
           <button type="submit">Запустить цикл</button>
         </form>
+        <form id="agent-queue-form" class="chat-form">
+          <input id="queue-goal-input" type="text" placeholder="Цель в очередь автономного воркера" required />
+          <select id="queue-provider">
+            <option value="gigachat">gigachat</option>
+            <option value="openai">openai</option>
+            <option value="ollama">ollama</option>
+          </select>
+          <button type="submit">Добавить в очередь</button>
+        </form>
+        <section class="controls">
+          <button id="worker-start-btn" type="button">Старт воркера</button>
+          <button id="worker-stop-btn" type="button">Стоп воркера</button>
+        </section>
+        <pre id="worker-status-box" class="chat"></pre>
         <pre id="agent-runs-box" class="chat"></pre>
+        <pre id="agent-queue-box" class="chat"></pre>
       </section>
     </main>
     <script src="/static/admin.js"></script>

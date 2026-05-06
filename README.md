@@ -129,6 +129,10 @@ MVP-проект агента с веб-интерфейсом, который:
   - act: следующее действие,
   - verify: PASS/FAIL оценка,
   - reflect: краткая ретроспектива.
+- Добавлен фоновый worker:
+  - очередь целей `autonomy_queue`,
+  - API управления worker (`start/stop/status`),
+  - лимиты безопасности: `AUTONOMY_INTERVAL_SEC`, `AUTONOMY_MAX_ITERATIONS`.
 
 ## Streaming
 

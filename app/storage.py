@@ -108,6 +108,19 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS autonomy_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                created_by TEXT NOT NULL,
+                last_error TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         conn.commit()
         # Lightweight migration for older DBs created before role/is_active fields.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -356,5 +369,65 @@ def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str,
         ).fetchall()
     return [
         (int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]), str(r[7]))
+        for r in rows
+    ]
+
+
+def enqueue_autonomy_goal(goal: str, provider: str, created_by: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "INSERT INTO autonomy_queue(goal, provider, created_by) VALUES (?, ?, ?)",
+            (goal, provider, created_by),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            """
+            SELECT id, goal, provider, created_by
+            FROM autonomy_queue
+            WHERE status = 'queued'
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute("UPDATE autonomy_queue SET status = 'running' WHERE id = ?", (int(row[0]),))
+        conn.commit()
+    return (int(row[0]), str(row[1]), str(row[2]), str(row[3]))
+
+
+def mark_queue_item_done(item_id: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE autonomy_queue SET status = 'done', last_error = '' WHERE id = ?", (item_id,))
+        conn.commit()
+
+
+def mark_queue_item_failed(item_id: int, error_text: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE autonomy_queue SET status = 'failed', last_error = ? WHERE id = ?",
+            (error_text[:1000], item_id),
+        )
+        conn.commit()
+
+
+def list_queue_items(limit: int = 50) -> List[Tuple[int, str, str, str, str, str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, goal, provider, status, created_by, last_error, created_at
+            FROM autonomy_queue
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        (int(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]))
         for r in rows
     ]
