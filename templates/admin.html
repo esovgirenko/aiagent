@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }} — Admin</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Admin Panel</h1>
+      <p class="subtitle">Управление пользователями и audit log</p>
+
+      <section class="controls">
+        <a href="/">К чату</a>
+      </section>
+
+      <section>
+        <h3>Создать пользователя</h3>
+        <form id="create-user-form" class="chat-form">
+          <input id="new-username" type="text" placeholder="username" required />
+          <input id="new-password" type="password" placeholder="password" required />
+          <select id="new-role">
+            <option value="user">user</option>
+            <option value="admin">admin</option>
+          </select>
+          <button type="submit">Создать</button>
+        </form>
+      </section>
+
+      <section>
+        <h3>Пользователи</h3>
+        <pre id="users-box" class="chat"></pre>
+      </section>
+
+      <section>
+        <h3>Audit logs</h3>
+        <pre id="audit-box" class="chat"></pre>
+      </section>
+    </main>
+    <script src="/static/admin.js"></script>
+  </body>
+  </html>
