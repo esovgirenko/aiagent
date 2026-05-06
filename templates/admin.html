@@ -37,6 +37,20 @@
         <h3>Audit logs</h3>
         <pre id="audit-box" class="chat"></pre>
       </section>
+
+      <section>
+        <h3>Autonomous cycle</h3>
+        <form id="agent-run-form" class="chat-form">
+          <input id="goal-input" type="text" placeholder="Цель цикла (например: улучшить обработку ошибок API)" required />
+          <select id="agent-provider">
+            <option value="gigachat">gigachat</option>
+            <option value="openai">openai</option>
+            <option value="ollama">ollama</option>
+          </select>
+          <button type="submit">Запустить цикл</button>
+        </form>
+        <pre id="agent-runs-box" class="chat"></pre>
+      </section>
     </main>
     <script src="/static/admin.js"></script>
   </body>

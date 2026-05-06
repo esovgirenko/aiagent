@@ -68,6 +68,46 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_by TEXT NOT NULL DEFAULT 'system',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goal_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                priority INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(goal_id) REFERENCES goals(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS autonomous_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal_id INTEGER NOT NULL,
+                provider TEXT NOT NULL,
+                plan_text TEXT NOT NULL,
+                action_text TEXT NOT NULL,
+                verify_status TEXT NOT NULL,
+                reflection_text TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(goal_id) REFERENCES goals(id)
+            )
+            """
+        )
         conn.commit()
         # Lightweight migration for older DBs created before role/is_active fields.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -228,3 +268,93 @@ def list_audit_logs(limit: int = 100) -> List[Tuple[str, str, str, str, str]]:
             (limit,),
         ).fetchall()
     return [(str(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4])) for r in rows]
+
+
+def create_goal(title: str, created_by: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "INSERT INTO goals(title, created_by) VALUES (?, ?)",
+            (title, created_by),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def get_or_create_active_goal(title: str, created_by: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT id FROM goals WHERE title = ? AND status = 'active' ORDER BY id DESC LIMIT 1",
+            (title,),
+        ).fetchone()
+        if row:
+            return int(row[0])
+    return create_goal(title, created_by)
+
+
+def create_goal_task(goal_id: int, content: str, priority: int = 1) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "INSERT INTO goal_tasks(goal_id, content, priority) VALUES (?, ?, ?)",
+            (goal_id, content, priority),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_goal_tasks(goal_id: int) -> List[Tuple[int, str, str, int]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, content, status, priority
+            FROM goal_tasks
+            WHERE goal_id = ?
+            ORDER BY priority DESC, id ASC
+            """,
+            (goal_id,),
+        ).fetchall()
+    return [(int(r[0]), str(r[1]), str(r[2]), int(r[3])) for r in rows]
+
+
+def mark_task_done(task_id: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE goal_tasks SET status = 'done' WHERE id = ?", (task_id,))
+        conn.commit()
+
+
+def save_autonomous_run(
+    goal_id: int,
+    provider: str,
+    plan_text: str,
+    action_text: str,
+    verify_status: str,
+    reflection_text: str,
+    created_by: str,
+) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO autonomous_runs(
+                goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_by),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str, str, str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_at
+            FROM autonomous_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [
+        (int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]), str(r[7]))
+        for r in rows
+    ]

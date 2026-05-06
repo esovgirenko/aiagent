@@ -112,11 +112,23 @@ MVP-проект агента с веб-интерфейсом, который:
   - `POST /api/admin/users`
   - `POST /api/admin/users/status`
   - `GET /api/admin/audit`
+  - `POST /api/admin/agent/run-cycle`
+  - `GET /api/admin/agent/runs`
 
 ## Rate limit + audit log
 
 - Лимит запросов на IP: `RATE_LIMIT_PER_MINUTE` (по умолчанию 20).
 - Логи действий пишутся в таблицу `audit_logs` (`login_success`, `login_failed`, `chat`, `chat_stream`, `feedback`, `logout`).
+
+## Autonomous cycle (plan/act/verify/reflect)
+
+- В admin UI можно запустить автономный цикл по цели.
+- Цикл сохраняется в SQLite таблицах: `goals`, `goal_tasks`, `autonomous_runs`.
+- Каждый запуск выполняет:
+  - plan: план из 3 шагов,
+  - act: следующее действие,
+  - verify: PASS/FAIL оценка,
+  - reflect: краткая ретроспектива.
 
 ## Streaming
 

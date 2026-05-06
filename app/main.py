@@ -13,15 +13,21 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .llm_clients import get_client
 from .storage import (
+    create_goal_task,
     create_user,
     ensure_default_user,
+    get_or_create_active_goal,
     get_feedback_summary,
     get_recent_memories,
     get_user,
     init_db,
+    list_autonomous_runs,
     list_audit_logs,
+    list_goal_tasks,
     list_users,
+    mark_task_done,
     save_audit_log,
+    save_autonomous_run,
     save_conversation,
     save_feedback,
     set_user_active,
@@ -49,6 +55,11 @@ class AdminCreateUserRequest(BaseModel):
 class AdminSetUserStatusRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     is_active: bool
+
+
+class AgentRunRequest(BaseModel):
+    goal: str = Field(min_length=5, max_length=500)
+    provider: Literal["openai", "ollama", "gigachat"] = "gigachat"
 
 
 _RATE_BUCKETS: dict[str, list[float]] = {}
@@ -123,6 +134,66 @@ def require_admin(request: Request) -> None:
     require_auth(request)
     if not _is_admin(request):
         raise HTTPException(status_code=403, detail="Admin access required")
+
+
+async def run_autonomous_cycle(goal: str, provider: str) -> dict:
+    client = get_client(provider)
+    plan_text = await client.chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Create a concise 3-step implementation plan for this software goal:\n"
+                    f"{goal}\n"
+                    "Output plain bullet points."
+                ),
+            }
+        ]
+    )
+    action_text = await client.chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Given this plan, provide the next concrete action to execute now.\n"
+                    f"{plan_text}"
+                ),
+            }
+        ]
+    )
+    verify_text = await client.chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Evaluate whether this action is specific and testable. "
+                    "Answer with PASS or FAIL and one short reason.\n"
+                    f"{action_text}"
+                ),
+            }
+        ]
+    )
+    verify_status = "PASS" if "PASS" in verify_text.upper() else "FAIL"
+    reflection_text = await client.chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Write a 2-line retrospective: what worked and what to improve next cycle.\n"
+                    f"Goal: {goal}\n"
+                    f"Plan: {plan_text}\n"
+                    f"Action: {action_text}\n"
+                    f"Verification: {verify_text}"
+                ),
+            }
+        ]
+    )
+    return {
+        "plan_text": plan_text,
+        "action_text": action_text,
+        "verify_status": verify_status,
+        "reflection_text": reflection_text,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -303,5 +374,60 @@ async def admin_audit_logs(request: Request, _: None = Depends(require_admin)) -
             "created_at": created_at,
         }
         for username, action, ip, details, created_at in list_audit_logs(limit=200)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/admin/agent/run-cycle")
+async def admin_run_cycle(
+    payload: AgentRunRequest, request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
+    _rate_limit(request)
+    goal_id = get_or_create_active_goal(payload.goal, _username(request))
+    task_id = create_goal_task(goal_id, f"Cycle action for: {payload.goal}", priority=1)
+    result = await run_autonomous_cycle(payload.goal, payload.provider)
+    if result["verify_status"] == "PASS":
+        mark_task_done(task_id)
+    run_id = save_autonomous_run(
+        goal_id=goal_id,
+        provider=payload.provider,
+        plan_text=result["plan_text"],
+        action_text=result["action_text"],
+        verify_status=result["verify_status"],
+        reflection_text=result["reflection_text"],
+        created_by=_username(request),
+    )
+    save_audit_log(
+        _username(request),
+        "admin_agent_run_cycle",
+        request.client.host if request.client else "unknown",
+        f"goal_id={goal_id},run_id={run_id}",
+    )
+    return JSONResponse({"ok": True, "run_id": run_id, "goal_id": goal_id, **result})
+
+
+@app.get("/api/admin/agent/runs")
+async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    items = [
+        {
+            "id": run_id,
+            "goal_id": goal_id,
+            "provider": provider,
+            "plan_text": plan_text,
+            "action_text": action_text,
+            "verify_status": verify_status,
+            "reflection_text": reflection_text,
+            "created_at": created_at,
+        }
+        for run_id, goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_at in list_autonomous_runs(30)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.get("/api/admin/agent/goals/{goal_id}/tasks")
+async def admin_goal_tasks(goal_id: int, request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    items = [
+        {"id": tid, "content": content, "status": status, "priority": priority}
+        for tid, content, status, priority in list_goal_tasks(goal_id)
     ]
     return JSONResponse({"items": items})
