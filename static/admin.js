@@ -66,7 +66,7 @@ async function refreshAgentQueue() {
   queueBox.textContent = items
     .map(
       (q) =>
-        `#${q.id} [${q.status}] prio=${q.priority} tries=${q.attempts}\n` +
+        `#${q.id} [${q.status}] prio=${q.priority} tries=${q.attempts}/${q.target_iterations}\n` +
         `goal: ${q.goal}\nprovider: ${q.provider}\nerror: ${q.last_error || "-"}`
     )
     .join("\n\n");
@@ -129,11 +129,12 @@ queueForm.addEventListener("submit", async (e) => {
   const goal = document.getElementById("queue-goal-input").value.trim();
   const provider = document.getElementById("queue-provider").value;
   const priority = Number(document.getElementById("queue-priority").value || "3");
+  const iterations = Number(document.getElementById("queue-iterations").value || "1");
   if (!goal) return;
   const res = await fetch("/api/admin/agent/queue", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal, provider, priority }),
+    body: JSON.stringify({ goal, provider, priority, iterations }),
   });
   if (!res.ok) {
     const data = await res.json();

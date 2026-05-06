@@ -118,6 +118,7 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'queued',
                 priority INTEGER NOT NULL DEFAULT 1,
                 attempts INTEGER NOT NULL DEFAULT 0,
+                target_iterations INTEGER NOT NULL DEFAULT 1,
                 created_by TEXT NOT NULL,
                 last_error TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -136,6 +137,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE autonomy_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
         if "attempts" not in qcols:
             conn.execute("ALTER TABLE autonomy_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        if "target_iterations" not in qcols:
+            conn.execute("ALTER TABLE autonomy_queue ADD COLUMN target_iterations INTEGER NOT NULL DEFAULT 1")
         rcols = [r[1] for r in conn.execute("PRAGMA table_info(autonomous_runs)").fetchall()]
         if "result_text" not in rcols:
             conn.execute("ALTER TABLE autonomous_runs ADD COLUMN result_text TEXT NOT NULL DEFAULT ''")
@@ -385,21 +388,26 @@ def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str,
     ]
 
 
-def enqueue_autonomy_goal(goal: str, provider: str, created_by: str, priority: int = 1) -> int:
+def enqueue_autonomy_goal(
+    goal: str, provider: str, created_by: str, priority: int = 1, target_iterations: int = 1
+) -> int:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
-            "INSERT INTO autonomy_queue(goal, provider, created_by, priority) VALUES (?, ?, ?, ?)",
-            (goal, provider, created_by, priority),
+            """
+            INSERT INTO autonomy_queue(goal, provider, created_by, priority, target_iterations)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (goal, provider, created_by, priority, target_iterations),
         )
         conn.commit()
         return int(cur.lastrowid)
 
 
-def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str]]:
+def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str, int, int]]:
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             """
-            SELECT id, goal, provider, created_by
+            SELECT id, goal, provider, created_by, attempts, target_iterations
             FROM autonomy_queue
             WHERE status = 'queued'
             ORDER BY priority DESC, id ASC
@@ -413,7 +421,7 @@ def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str]]:
             (int(row[0]),),
         )
         conn.commit()
-    return (int(row[0]), str(row[1]), str(row[2]), str(row[3]))
+    return (int(row[0]), str(row[1]), str(row[2]), str(row[3]), int(row[4]) + 1, int(row[5]))
 
 
 def mark_queue_item_done(item_id: int) -> None:
@@ -431,11 +439,20 @@ def mark_queue_item_failed(item_id: int, error_text: str) -> None:
         conn.commit()
 
 
-def list_queue_items(limit: int = 50) -> List[Tuple[int, str, str, str, int, int, str, str, str]]:
+def requeue_item(item_id: int, error_text: str = "") -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE autonomy_queue SET status = 'queued', last_error = ? WHERE id = ?",
+            (error_text[:1000], item_id),
+        )
+        conn.commit()
+
+
+def list_queue_items(limit: int = 50) -> List[Tuple[int, str, str, str, int, int, int, str, str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT id, goal, provider, status, priority, attempts, created_by, last_error, created_at
+            SELECT id, goal, provider, status, priority, attempts, target_iterations, created_by, last_error, created_at
             FROM autonomy_queue
             ORDER BY id DESC
             LIMIT ?
@@ -443,6 +460,17 @@ def list_queue_items(limit: int = 50) -> List[Tuple[int, str, str, str, int, int
             (limit,),
         ).fetchall()
     return [
-        (int(r[0]), str(r[1]), str(r[2]), str(r[3]), int(r[4]), int(r[5]), str(r[6]), str(r[7]), str(r[8]))
+        (
+            int(r[0]),
+            str(r[1]),
+            str(r[2]),
+            str(r[3]),
+            int(r[4]),
+            int(r[5]),
+            int(r[6]),
+            str(r[7]),
+            str(r[8]),
+            str(r[9]),
+        )
         for r in rows
     ]
