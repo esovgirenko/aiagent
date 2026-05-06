@@ -155,6 +155,12 @@ MVP-проект агента с веб-интерфейсом, который:
   - `GET /api/admin/agent/kpi`
   - фильтры runs по `verify/provider`
   - `GET /api/admin/agent/runs.csv` (экспорт).
+- Добавлен reviewer-gate:
+  - вторичная модель-рецензент (`AUTONOMY_REVIEWER_PROVIDER`) может отклонять результат цикла.
+- Добавлен self-edit safe pipeline:
+  - план изменения кода (`/api/admin/agent/self-edit/plan`),
+  - dry-run check (`/api/admin/agent/self-edit/check`),
+  - журнал self-edit запусков (`/api/admin/agent/self-edit/runs`).
 
 ## Streaming
 

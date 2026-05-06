@@ -100,6 +100,7 @@ def init_db() -> None:
                 provider TEXT NOT NULL,
                 result_text TEXT NOT NULL DEFAULT '',
                 execution_text TEXT NOT NULL DEFAULT '',
+                review_text TEXT NOT NULL DEFAULT '',
                 plan_text TEXT NOT NULL,
                 action_text TEXT NOT NULL,
                 verify_status TEXT NOT NULL,
@@ -144,6 +145,19 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS self_edit_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal TEXT NOT NULL,
+                plan_text TEXT NOT NULL,
+                check_output TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'planned',
+                created_by TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         conn.commit()
         # Lightweight migration for older DBs created before role/is_active fields.
         cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -168,6 +182,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE autonomous_runs ADD COLUMN result_text TEXT NOT NULL DEFAULT ''")
         if "execution_text" not in rcols:
             conn.execute("ALTER TABLE autonomous_runs ADD COLUMN execution_text TEXT NOT NULL DEFAULT ''")
+        if "review_text" not in rcols:
+            conn.execute("ALTER TABLE autonomous_runs ADD COLUMN review_text TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -379,6 +395,7 @@ def save_autonomous_run(
     provider: str,
     result_text: str,
     execution_text: str,
+    review_text: str,
     plan_text: str,
     action_text: str,
     verify_status: str,
@@ -389,20 +406,31 @@ def save_autonomous_run(
         cur = conn.execute(
             """
             INSERT INTO autonomous_runs(
-                goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                goal_id, provider, result_text, execution_text, review_text, plan_text, action_text, verify_status, reflection_text, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_by),
+            (
+                goal_id,
+                provider,
+                result_text,
+                execution_text,
+                review_text,
+                plan_text,
+                action_text,
+                verify_status,
+                reflection_text,
+                created_by,
+            ),
         )
         conn.commit()
         return int(cur.lastrowid)
 
 
-def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str, str, str, str, str, str]]:
+def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str, str, str, str, str, str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT id, goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_at
+            SELECT id, goal_id, provider, result_text, execution_text, review_text, plan_text, action_text, verify_status, reflection_text, created_at
             FROM autonomous_runs
             ORDER BY id DESC
             LIMIT ?
@@ -410,7 +438,19 @@ def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str,
             (limit,),
         ).fetchall()
     return [
-        (int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]), str(r[7]), str(r[8]), str(r[9]))
+        (
+            int(r[0]),
+            int(r[1]),
+            str(r[2]),
+            str(r[3]),
+            str(r[4]),
+            str(r[5]),
+            str(r[6]),
+            str(r[7]),
+            str(r[8]),
+            str(r[9]),
+            str(r[10]),
+        )
         for r in rows
     ]
 
@@ -623,9 +663,9 @@ def list_autonomous_runs_filtered(
     limit: int = 100,
     verify_status: str = "",
     provider: str = "",
-) -> List[Tuple[int, int, str, str, str, str, str, str, str, str]]:
+) -> List[Tuple[int, int, str, str, str, str, str, str, str, str, str]]:
     query = """
-        SELECT id, goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_at
+        SELECT id, goal_id, provider, result_text, execution_text, review_text, plan_text, action_text, verify_status, reflection_text, created_at
         FROM autonomous_runs
     """
     clauses = []
@@ -643,6 +683,45 @@ def list_autonomous_runs_filtered(
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(query, tuple(args)).fetchall()
     return [
-        (int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]), str(r[7]), str(r[8]), str(r[9]))
+        (
+            int(r[0]),
+            int(r[1]),
+            str(r[2]),
+            str(r[3]),
+            str(r[4]),
+            str(r[5]),
+            str(r[6]),
+            str(r[7]),
+            str(r[8]),
+            str(r[9]),
+            str(r[10]),
+        )
         for r in rows
     ]
+
+
+def save_self_edit_run(goal: str, plan_text: str, check_output: str, status: str, created_by: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO self_edit_runs(goal, plan_text, check_output, status, created_by)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (goal, plan_text, check_output[:4000], status, created_by),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+
+
+def list_self_edit_runs(limit: int = 50) -> List[Tuple[int, str, str, str, str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, goal, plan_text, check_output, status, created_at
+            FROM self_edit_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [(int(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5])) for r in rows]

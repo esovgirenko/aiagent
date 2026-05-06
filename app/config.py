@@ -18,6 +18,9 @@ class Settings:
     autonomy_fail_streak_limit: int = int(os.getenv("AUTONOMY_FAIL_STREAK_LIMIT", "3"))
     autonomy_idle_cycles_before_stop: int = int(os.getenv("AUTONOMY_IDLE_CYCLES_BEFORE_STOP", "2"))
     autonomy_summary_interval_sec: int = int(os.getenv("AUTONOMY_SUMMARY_INTERVAL_SEC", "3600"))
+    autonomy_reviewer_provider: str = os.getenv("AUTONOMY_REVIEWER_PROVIDER", "openai")
+    autonomy_reviewer_enabled: bool = os.getenv("AUTONOMY_REVIEWER_ENABLED", "true").lower() == "true"
+    autonomy_self_edit_enabled: bool = os.getenv("AUTONOMY_SELF_EDIT_ENABLED", "false").lower() == "true"
 
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")

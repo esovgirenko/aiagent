@@ -35,6 +35,7 @@ from .storage import (
     init_db,
     list_autonomous_runs,
     list_approvals,
+    list_self_edit_runs,
     list_audit_logs,
     list_autonomous_runs_filtered,
     list_goal_run_history,
@@ -50,6 +51,7 @@ from .storage import (
     save_autonomous_run,
     save_conversation,
     save_feedback,
+    save_self_edit_run,
     set_user_active,
     verify_password,
 )
@@ -92,6 +94,10 @@ class ApprovalDecisionRequest(BaseModel):
     approval_id: int
     approve: bool
     note: str = ""
+
+
+class SelfEditRequest(BaseModel):
+    goal: str = Field(min_length=5, max_length=500)
 
 
 _RATE_BUCKETS: dict[str, list[float]] = {}
@@ -218,14 +224,34 @@ def _fallback_action_for_attempt(goal: str, attempt_no: int) -> str:
     return strategies[idx]
 
 
+SKILL_REGISTRY: dict[str, dict[str, str]] = {
+    "version_probe": {
+        "action_type": "shell_safe",
+        "primary_cmd": "python3 --version",
+        "fallback_cmd": "uname -a",
+    },
+    "api_diagnostics": {
+        "action_type": "llm_query",
+        "prompt": "Сформируй проверяемый чеклист диагностики для цели: {goal}",
+    },
+    "generic_analysis": {
+        "action_type": "llm_query",
+        "prompt": "Выполни аналитический следующий шаг для цели: {goal}",
+    },
+}
+
+
 def _run_skill(goal: str, attempt_no: int) -> tuple[str, str]:
     g = goal.lower()
     if "верси" in g:
-        cmd = "python3 --version" if attempt_no % 2 == 1 else "uname -a"
-        return ("shell_safe", cmd)
+        cfg = SKILL_REGISTRY["version_probe"]
+        cmd = cfg["primary_cmd"] if attempt_no % 2 == 1 else cfg["fallback_cmd"]
+        return (cfg["action_type"], cmd)
     if "api" in g or "ошиб" in g:
-        return ("llm_query", f"Сформируй проверяемый чеклист диагностики для цели: {goal}")
-    return ("llm_query", f"Выполни аналитический следующий шаг для цели: {goal}")
+        cfg = SKILL_REGISTRY["api_diagnostics"]
+        return (cfg["action_type"], cfg["prompt"].format(goal=goal))
+    cfg = SKILL_REGISTRY["generic_analysis"]
+    return (cfg["action_type"], cfg["prompt"].format(goal=goal))
 
 
 def _risk_level(action_type: str, action_input: str) -> str:
@@ -358,6 +384,29 @@ async def run_autonomous_cycle(
             }
         ]
     )
+    review_text = ""
+    if settings.autonomy_reviewer_enabled:
+        try:
+            reviewer = get_client(settings.autonomy_reviewer_provider)
+            review_text = await reviewer.chat(
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Ты независимый ревьюер результата автономного цикла. "
+                            "Оцени корректность и риск. Верни verdict=APPROVE или verdict=REJECT и короткую причину.\n"
+                            f"Цель: {goal}\n"
+                            f"Результат: {result_text}\n"
+                            f"Выполнение: {execution_text}\n"
+                            f"Проверка: {verify_status}"
+                        ),
+                    }
+                ]
+            )
+            if "REJECT" in review_text.upper():
+                verify_status = "FAIL"
+        except Exception as exc:
+            review_text = f"Reviewer unavailable: {exc}"
     return {
         "result_text": result_text,
         "plan_text": plan_text,
@@ -365,6 +414,7 @@ async def run_autonomous_cycle(
         "execution_text": execution_text,
         "verify_status": verify_status,
         "reflection_text": reflection_text,
+        "review_text": review_text,
         "risk_level": risk,
         "executed_action_type": action_type,
         "executed_action_input": action_input,
@@ -413,6 +463,7 @@ async def _autonomy_worker_loop() -> None:
                 provider=provider,
                 result_text=result["result_text"],
                 execution_text=result["execution_text"],
+                review_text=result["review_text"],
                 plan_text=result["plan_text"],
                 action_text=result["action_text"],
                 verify_status=result["verify_status"],
@@ -658,6 +709,7 @@ async def admin_run_cycle(
         provider=payload.provider,
         result_text=result["result_text"],
         execution_text=result["execution_text"],
+        review_text=result["review_text"],
         plan_text=result["plan_text"],
         action_text=result["action_text"],
         verify_status=result["verify_status"],
@@ -713,13 +765,14 @@ async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -
             "provider": provider,
             "result_text": result_text,
             "execution_text": execution_text,
+            "review_text": review_text,
             "plan_text": plan_text,
             "action_text": action_text,
             "verify_status": verify_status,
             "reflection_text": reflection_text,
             "created_at": created_at,
         }
-        for run_id, goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_at in rows
+        for run_id, goal_id, provider, result_text, execution_text, review_text, plan_text, action_text, verify_status, reflection_text, created_at in rows
     ]
     return JSONResponse({"items": items})
 
@@ -862,13 +915,71 @@ async def admin_approvals_decide(
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/admin/agent/self-edit/plan")
+async def admin_self_edit_plan(
+    payload: SelfEditRequest, request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
+    if not settings.autonomy_self_edit_enabled:
+        raise HTTPException(status_code=400, detail="Self-edit mode is disabled by config")
+    try:
+        client = get_client(settings.autonomy_reviewer_provider)
+        plan_text = await client.chat(
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "Сформируй безопасный план изменения кода (без выполнения) для цели:\n"
+                        f"{payload.goal}\n"
+                        "Формат: 3-5 коротких шагов с файлами и ожидаемым эффектом."
+                    ),
+                }
+            ]
+        )
+    except Exception:
+        plan_text = (
+            "1) Определить затронутые модули и интерфейсы.\n"
+            "2) Внести минимальные изменения и добавить проверки.\n"
+            "3) Выполнить compile/test smoke и зафиксировать результат."
+        )
+    run_id = save_self_edit_run(payload.goal, plan_text, "", "planned", _username(request))
+    save_audit_log(
+        _username(request),
+        "admin_self_edit_plan",
+        request.client.host if request.client else "unknown",
+        f"run_id={run_id}",
+    )
+    return JSONResponse({"ok": True, "run_id": run_id, "plan_text": plan_text})
+
+
+@app.post("/api/admin/agent/self-edit/check")
+async def admin_self_edit_check(
+    payload: SelfEditRequest, request: Request, _: None = Depends(require_admin)
+) -> JSONResponse:
+    if not settings.autonomy_self_edit_enabled:
+        raise HTTPException(status_code=400, detail="Self-edit mode is disabled by config")
+    proc = subprocess.run(["python3", "-m", "compileall", "app"], capture_output=True, text=True, timeout=60)
+    output = (proc.stdout or proc.stderr).strip()
+    status = "checked" if proc.returncode == 0 else "failed"
+    run_id = save_self_edit_run(payload.goal, "self-edit check", output, status, _username(request))
+    return JSONResponse({"ok": proc.returncode == 0, "run_id": run_id, "output": output[:4000], "status": status})
+
+
+@app.get("/api/admin/agent/self-edit/runs")
+async def admin_self_edit_runs(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    items = [
+        {"id": rid, "goal": goal, "plan_text": plan, "check_output": check, "status": status, "created_at": created_at}
+        for rid, goal, plan, check, status, created_at in list_self_edit_runs(50)
+    ]
+    return JSONResponse({"items": items})
+
+
 @app.get("/api/admin/agent/runs.csv")
 async def admin_agent_runs_csv(request: Request, _: None = Depends(require_admin)) -> PlainTextResponse:
     rows = list_autonomous_runs_filtered(limit=500)
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(
-        ["id", "goal_id", "provider", "result_text", "execution_text", "plan_text", "action_text", "verify_status", "reflection_text", "created_at"]
+        ["id", "goal_id", "provider", "result_text", "execution_text", "review_text", "plan_text", "action_text", "verify_status", "reflection_text", "created_at"]
     )
     for row in rows:
         writer.writerow(list(row))
