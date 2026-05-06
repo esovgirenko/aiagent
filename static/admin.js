@@ -24,19 +24,60 @@ async function refreshAudit() {
 async function refreshAgentRuns() {
   const res = await fetch("/api/admin/agent/runs");
   const data = await res.json();
-  agentRunsBox.textContent = JSON.stringify(data.items, null, 2);
+  const items = data.items || [];
+  if (!items.length) {
+    agentRunsBox.textContent = "Пока нет запусков автономного цикла.";
+    return;
+  }
+  agentRunsBox.textContent = items
+    .map((item) => {
+      return [
+        `# Запуск ${item.id} | goal_id=${item.goal_id} | ${item.created_at}`,
+        `Провайдер: ${item.provider}`,
+        "",
+        "ПЛАН:",
+        String(item.plan_text || "").trim(),
+        "",
+        "ДЕЙСТВИЕ:",
+        String(item.action_text || "").trim(),
+        "",
+        `ПРОВЕРКА: ${item.verify_status}`,
+        "",
+        "РЕТРОСПЕКТИВА:",
+        String(item.reflection_text || "").trim(),
+        "",
+        "------------------------------------------------------------",
+      ].join("\n");
+    })
+    .join("\n");
 }
 
 async function refreshAgentQueue() {
   const res = await fetch("/api/admin/agent/queue");
   const data = await res.json();
-  queueBox.textContent = JSON.stringify(data.items, null, 2);
+  const items = data.items || [];
+  if (!items.length) {
+    queueBox.textContent = "Очередь пуста.";
+    return;
+  }
+  queueBox.textContent = items
+    .map(
+      (q) =>
+        `#${q.id} [${q.status}] prio=${q.priority} tries=${q.attempts}\n` +
+        `goal: ${q.goal}\nprovider: ${q.provider}\nerror: ${q.last_error || "-"}`
+    )
+    .join("\n\n");
 }
 
 async function refreshWorkerStatus() {
   const res = await fetch("/api/admin/agent/worker");
   const data = await res.json();
-  workerStatusBox.textContent = JSON.stringify(data, null, 2);
+  workerStatusBox.textContent =
+    `Состояние: ${data.running ? "RUNNING" : "STOPPED"}\n` +
+    `Включен: ${data.enabled}\n` +
+    `Итерации: ${data.iterations}/${data.max_iterations}\n` +
+    `Серия ошибок: ${data.fail_streak}/${data.fail_streak_limit}\n` +
+    `Интервал: ${data.interval_sec} сек`;
 }
 
 createUserForm.addEventListener("submit", async (e) => {

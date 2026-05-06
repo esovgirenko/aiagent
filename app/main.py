@@ -171,9 +171,10 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
             {
                 "role": "user",
                 "content": (
-                    "Create a concise 3-step implementation plan for this software goal:\n"
+                    "Отвечай строго на русском языке.\n"
+                    "Составь краткий план из 3 шагов для этой цели:\n"
                     f"{goal}\n"
-                    "Output plain bullet points."
+                    "Формат: маркированный список."
                 ),
             }
         ]
@@ -183,7 +184,8 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
             {
                 "role": "user",
                 "content": (
-                    "Given this plan, provide the next concrete action to execute now.\n"
+                    "Отвечай строго на русском языке.\n"
+                    "По этому плану дай следующее конкретное действие для выполнения прямо сейчас.\n"
                     f"{plan_text}"
                 ),
             }
@@ -194,8 +196,9 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
             {
                 "role": "user",
                 "content": (
-                    "Evaluate whether this action is specific and testable. "
-                    "Answer with PASS or FAIL and one short reason.\n"
+                    "Отвечай строго на русском языке.\n"
+                    "Оцени, насколько действие конкретно и проверяемо. "
+                    "Ответ только в формате: PASS: <короткая причина> или FAIL: <короткая причина>.\n"
                     f"{action_text}"
                 ),
             }
@@ -207,11 +210,14 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
             {
                 "role": "user",
                 "content": (
-                    "Write a 2-line retrospective: what worked and what to improve next cycle.\n"
-                    f"Goal: {goal}\n"
-                    f"Plan: {plan_text}\n"
-                    f"Action: {action_text}\n"
-                    f"Verification: {verify_text}"
+                    "Отвечай строго на русском языке.\n"
+                    "Напиши ретроспективу в 2 пунктах:\n"
+                    "1) Что сработало\n"
+                    "2) Что улучшить в следующем цикле\n"
+                    f"Цель: {goal}\n"
+                    f"План: {plan_text}\n"
+                    f"Действие: {action_text}\n"
+                    f"Проверка: {verify_text}"
                 ),
             }
         ]
