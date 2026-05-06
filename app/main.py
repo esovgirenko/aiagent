@@ -171,7 +171,38 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
-async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = None) -> dict:
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def _is_repeated_action(action_text: str, history_items: list[tuple[str, str, str]]) -> bool:
+    current = _normalize_text(action_text)
+    if not current:
+        return False
+    for prev_action, _, _ in history_items:
+        prev = _normalize_text(prev_action)
+        if not prev:
+            continue
+        if current == prev:
+            return True
+        if current in prev or prev in current:
+            return True
+    return False
+
+
+def _fallback_action_for_attempt(goal: str, attempt_no: int) -> str:
+    strategies = [
+        f"Определи версию через анализ уже доступных данных по цели: {goal}. Укажи только подтвержденную версию или НЕТ ДАННЫХ.",
+        f"Сформируй структурированный запрос на проверку версии для цели: {goal}. Верни короткий результат и источник.",
+        f"Проведи альтернативную проверку версии по косвенным признакам для цели: {goal}. Если уверенности нет — НЕТ ДАННЫХ.",
+    ]
+    idx = max(0, (attempt_no - 1) % len(strategies))
+    return strategies[idx]
+
+
+async def run_autonomous_cycle(
+    goal: str, provider: str, goal_id: int | None = None, attempt_no: int = 1
+) -> dict:
     client = get_client(provider)
     history_items = list_goal_run_history(goal_id, limit=5) if goal_id else []
     history_text = "\n".join(
@@ -223,6 +254,9 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
             }
         ]
     )
+    # Hard anti-loop guard: forbid repeated action and /version pseudo-command.
+    if "/version" in action_text.lower() or _is_repeated_action(action_text, history_items):
+        action_text = _fallback_action_for_attempt(goal, attempt_no)
     exec_plan_raw = await client.chat(
         [
             {
@@ -329,7 +363,7 @@ async def _autonomy_worker_loop() -> None:
         try:
             goal_id = get_or_create_active_goal(goal, created_by)
             task_id = create_goal_task(goal_id, f"Auto cycle action for: {goal}", priority=1)
-            result = await run_autonomous_cycle(goal, provider, goal_id=goal_id)
+            result = await run_autonomous_cycle(goal, provider, goal_id=goal_id, attempt_no=current_attempt)
             is_success = result["verify_status"] == "PASS" and result["result_text"].strip().upper() != "НЕТ ДАННЫХ"
             if is_success:
                 mark_task_done(task_id)
@@ -567,7 +601,7 @@ async def admin_run_cycle(
     _rate_limit(request)
     goal_id = get_or_create_active_goal(payload.goal, _username(request))
     task_id = create_goal_task(goal_id, f"Cycle action for: {payload.goal}", priority=1)
-    result = await run_autonomous_cycle(payload.goal, payload.provider, goal_id=goal_id)
+    result = await run_autonomous_cycle(payload.goal, payload.provider, goal_id=goal_id, attempt_no=1)
     if result["verify_status"] == "PASS":
         mark_task_done(task_id)
     run_id = save_autonomous_run(
