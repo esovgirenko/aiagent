@@ -66,6 +66,7 @@ class AdminSetUserStatusRequest(BaseModel):
 class AgentRunRequest(BaseModel):
     goal: str = Field(min_length=5, max_length=500)
     provider: Literal["openai", "ollama", "gigachat"] = "gigachat"
+    priority: int = Field(default=1, ge=1, le=5)
 
 
 class AgentWorkerRequest(BaseModel):
@@ -76,6 +77,7 @@ _RATE_BUCKETS: dict[str, list[float]] = {}
 _AUTONOMY_WORKER_ENABLED = False
 _AUTONOMY_WORKER_TASK: asyncio.Task | None = None
 _AUTONOMY_ITERATIONS = 0
+_AUTONOMY_FAIL_STREAK = 0
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -223,7 +225,7 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
 
 
 async def _autonomy_worker_loop() -> None:
-    global _AUTONOMY_ITERATIONS
+    global _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK, _AUTONOMY_WORKER_ENABLED
     while _AUTONOMY_WORKER_ENABLED and _AUTONOMY_ITERATIONS < settings.autonomy_max_iterations:
         item = fetch_next_queued_goal()
         if not item:
@@ -247,10 +249,21 @@ async def _autonomy_worker_loop() -> None:
             )
             mark_queue_item_done(queue_id)
             _AUTONOMY_ITERATIONS += 1
+            _AUTONOMY_FAIL_STREAK = 0
             save_audit_log(created_by, "autonomy_worker_cycle", "worker", f"queue_id={queue_id},run_id={run_id}")
         except Exception as exc:
             mark_queue_item_failed(queue_id, str(exc))
+            _AUTONOMY_FAIL_STREAK += 1
             save_audit_log(created_by, "autonomy_worker_failed", "worker", f"queue_id={queue_id}:{exc}")
+            if _AUTONOMY_FAIL_STREAK >= settings.autonomy_fail_streak_limit:
+                _AUTONOMY_WORKER_ENABLED = False
+                save_audit_log(
+                    created_by,
+                    "autonomy_worker_auto_stop",
+                    "worker",
+                    f"fail_streak={_AUTONOMY_FAIL_STREAK}",
+                )
+                break
             await asyncio.sleep(1)
 
 
@@ -468,7 +481,7 @@ async def admin_run_cycle(
 async def admin_queue_goal(
     payload: AgentRunRequest, request: Request, _: None = Depends(require_admin)
 ) -> JSONResponse:
-    queue_id = enqueue_autonomy_goal(payload.goal, payload.provider, _username(request))
+    queue_id = enqueue_autonomy_goal(payload.goal, payload.provider, _username(request), payload.priority)
     save_audit_log(
         _username(request),
         "admin_agent_queue_goal",
@@ -504,11 +517,13 @@ async def admin_agent_queue(request: Request, _: None = Depends(require_admin)) 
             "goal": goal,
             "provider": provider,
             "status": status,
+            "priority": priority,
+            "attempts": attempts,
             "created_by": created_by,
             "last_error": last_error,
             "created_at": created_at,
         }
-        for qid, goal, provider, status, created_by, last_error, created_at in list_queue_items(100)
+        for qid, goal, provider, status, priority, attempts, created_by, last_error, created_at in list_queue_items(100)
     ]
     return JSONResponse({"items": items})
 
@@ -517,10 +532,11 @@ async def admin_agent_queue(request: Request, _: None = Depends(require_admin)) 
 async def admin_agent_worker(
     payload: AgentWorkerRequest, request: Request, _: None = Depends(require_admin)
 ) -> JSONResponse:
-    global _AUTONOMY_WORKER_ENABLED, _AUTONOMY_WORKER_TASK, _AUTONOMY_ITERATIONS
+    global _AUTONOMY_WORKER_ENABLED, _AUTONOMY_WORKER_TASK, _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK
     if payload.enabled:
         _AUTONOMY_WORKER_ENABLED = True
         _AUTONOMY_ITERATIONS = 0
+        _AUTONOMY_FAIL_STREAK = 0
         if not _AUTONOMY_WORKER_TASK or _AUTONOMY_WORKER_TASK.done():
             _AUTONOMY_WORKER_TASK = asyncio.create_task(_autonomy_worker_loop())
         save_audit_log(_username(request), "admin_agent_worker_start", request.client.host if request.client else "unknown")
@@ -534,6 +550,7 @@ async def admin_agent_worker(
             "ok": True,
             "enabled": _AUTONOMY_WORKER_ENABLED,
             "iterations": _AUTONOMY_ITERATIONS,
+            "fail_streak": _AUTONOMY_FAIL_STREAK,
             "max_iterations": settings.autonomy_max_iterations,
         }
     )
@@ -547,6 +564,8 @@ async def admin_agent_worker_status(request: Request, _: None = Depends(require_
             "enabled": _AUTONOMY_WORKER_ENABLED,
             "running": running,
             "iterations": _AUTONOMY_ITERATIONS,
+            "fail_streak": _AUTONOMY_FAIL_STREAK,
+            "fail_streak_limit": settings.autonomy_fail_streak_limit,
             "max_iterations": settings.autonomy_max_iterations,
             "interval_sec": settings.autonomy_interval_sec,
         }

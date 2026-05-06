@@ -133,6 +133,8 @@ MVP-проект агента с веб-интерфейсом, который:
   - очередь целей `autonomy_queue`,
   - API управления worker (`start/stop/status`),
   - лимиты безопасности: `AUTONOMY_INTERVAL_SEC`, `AUTONOMY_MAX_ITERATIONS`.
+  - auto-stop при серии ошибок: `AUTONOMY_FAIL_STREAK_LIMIT`.
+- Очередь поддерживает приоритет (1..5), worker обрабатывает сначала более приоритетные цели.
 
 ## Streaming
 

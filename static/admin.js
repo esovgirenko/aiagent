@@ -84,11 +84,12 @@ queueForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const goal = document.getElementById("queue-goal-input").value.trim();
   const provider = document.getElementById("queue-provider").value;
+  const priority = Number(document.getElementById("queue-priority").value || "3");
   if (!goal) return;
   const res = await fetch("/api/admin/agent/queue", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal, provider }),
+    body: JSON.stringify({ goal, provider, priority }),
   });
   if (!res.ok) {
     const data = await res.json();

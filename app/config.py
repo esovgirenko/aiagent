@@ -15,6 +15,7 @@ class Settings:
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
     autonomy_interval_sec: int = int(os.getenv("AUTONOMY_INTERVAL_SEC", "20"))
     autonomy_max_iterations: int = int(os.getenv("AUTONOMY_MAX_ITERATIONS", "20"))
+    autonomy_fail_streak_limit: int = int(os.getenv("AUTONOMY_FAIL_STREAK_LIMIT", "3"))
 
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
