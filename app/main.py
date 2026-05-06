@@ -224,11 +224,33 @@ def _fallback_action_for_attempt(goal: str, attempt_no: int) -> str:
     return strategies[idx]
 
 
+def _is_gigachat_version_goal(goal: str, provider: str) -> bool:
+    g = goal.lower()
+    return "верси" in g and ("gigachat" in g or provider == "gigachat")
+
+
+def _extract_gigachat_version(text: str) -> str:
+    lowered = text.lower()
+    if "gigachat" not in lowered and "версия модели" not in lowered:
+        return ""
+    m = re.search(r"\b\d+\.\d+(?:\.\d+)?\b", text)
+    return m.group(0) if m else ""
+
+
 SKILL_REGISTRY: dict[str, dict[str, str]] = {
     "version_probe": {
         "action_type": "shell_safe",
         "primary_cmd": "python3 --version",
         "fallback_cmd": "uname -a",
+    },
+    "gigachat_version_probe": {
+        "action_type": "llm_query",
+        "prompt": (
+            "Определи только версию модели GigaChat.\n"
+            "Если в текущем контексте нет подтвержденной версии GigaChat, ответь ровно: НЕТ ДАННЫХ.\n"
+            "Не используй версии Python/OS/другого ПО.\n"
+            "Формат ответа: либо `Версия GigaChat: X.Y[.Z]`, либо `НЕТ ДАННЫХ`."
+        ),
     },
     "api_diagnostics": {
         "action_type": "llm_query",
@@ -241,8 +263,11 @@ SKILL_REGISTRY: dict[str, dict[str, str]] = {
 }
 
 
-def _run_skill(goal: str, attempt_no: int) -> tuple[str, str]:
+def _run_skill(goal: str, provider: str, attempt_no: int) -> tuple[str, str]:
     g = goal.lower()
+    if _is_gigachat_version_goal(goal, provider):
+        cfg = SKILL_REGISTRY["gigachat_version_probe"]
+        return (cfg["action_type"], cfg["prompt"])
     if "верси" in g:
         cfg = SKILL_REGISTRY["version_probe"]
         cmd = cfg["primary_cmd"] if attempt_no % 2 == 1 else cfg["fallback_cmd"]
@@ -321,7 +346,7 @@ async def run_autonomous_cycle(
     # Hard anti-loop guard: forbid repeated action and /version pseudo-command.
     if "/version" in action_text.lower() or _is_repeated_action(action_text, history_items):
         action_text = _fallback_action_for_attempt(goal, attempt_no)
-    action_type, action_input = _run_skill(goal, attempt_no)
+    action_type, action_input = _run_skill(goal, provider, attempt_no)
     risk = _risk_level(action_type, action_input)
     execution_text = ""
     try:
@@ -340,9 +365,15 @@ async def run_autonomous_cycle(
         execution_text = f"Ошибка выполнения действия: {exc}"
 
     # Reconcile final result with execution output.
-    # If execution contains a concrete version, prefer it over "НЕТ ДАННЫХ".
     version_match = re.search(r"\b\d+\.\d+(?:\.\d+)?\b", execution_text)
-    if result_text.strip().upper() == "НЕТ ДАННЫХ" and version_match:
+    gigachat_version = _extract_gigachat_version(execution_text)
+    if _is_gigachat_version_goal(goal, provider):
+        if gigachat_version:
+            result_text = f"Обнаружена версия GigaChat: {gigachat_version}"
+        elif result_text.strip().upper() != "НЕТ ДАННЫХ":
+            # For GigaChat goals do not accept unverified generic versions.
+            result_text = "НЕТ ДАННЫХ"
+    elif result_text.strip().upper() == "НЕТ ДАННЫХ" and version_match:
         result_text = f"Обнаружена версия: {version_match.group(0)}"
 
     verify_text = await client.chat(
@@ -363,7 +394,9 @@ async def run_autonomous_cycle(
     )
     verify_status = "PASS" if "PASS" in verify_text.upper() else "FAIL"
     if "верси" in goal.lower():
-        if result_text.strip().upper() == "НЕТ ДАННЫХ":
+        if _is_gigachat_version_goal(goal, provider):
+            verify_status = "PASS" if bool(gigachat_version) else "FAIL"
+        elif result_text.strip().upper() == "НЕТ ДАННЫХ":
             verify_status = "FAIL"
         elif version_match:
             verify_status = "PASS"
