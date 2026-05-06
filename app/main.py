@@ -6,9 +6,11 @@ import re
 import shlex
 import subprocess
 import time
+from urllib.parse import urlencode
 from pathlib import Path
 from typing import AsyncIterator, Literal
 
+import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -237,6 +239,40 @@ def _extract_gigachat_version(text: str) -> str:
     return m.group(0) if m else ""
 
 
+def _is_web_search_goal(goal: str) -> bool:
+    g = goal.lower()
+    markers = ("интернет", "в интернете", "web", "в сети", "найди", "поиск", "search")
+    return any(m in g for m in markers)
+
+
+async def _web_search(query: str, max_results: int = 5) -> str:
+    if not settings.web_search_enabled:
+        return "Веб-поиск отключен настройкой WEB_SEARCH_ENABLED."
+    params = urlencode({"q": query, "format": "json", "no_html": 1, "skip_disambig": 1})
+    url = f"https://api.duckduckgo.com/?{params}"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+    lines: list[str] = []
+    abstract = str(data.get("AbstractText", "")).strip()
+    if abstract:
+        lines.append(f"- {abstract}")
+    related = data.get("RelatedTopics") or []
+    added = 0
+    for item in related:
+        if isinstance(item, dict) and item.get("Text"):
+            text = str(item["Text"]).strip()
+            first_url = str(item.get("FirstURL", "")).strip()
+            lines.append(f"- {text}" + (f" ({first_url})" if first_url else ""))
+            added += 1
+        if added >= max_results:
+            break
+    if not lines:
+        return "НЕТ ДАННЫХ"
+    return "Результаты веб-поиска:\n" + "\n".join(lines[: max_results + 1])
+
+
 SKILL_REGISTRY: dict[str, dict[str, str]] = {
     "version_probe": {
         "action_type": "shell_safe",
@@ -260,11 +296,18 @@ SKILL_REGISTRY: dict[str, dict[str, str]] = {
         "action_type": "llm_query",
         "prompt": "Выполни аналитический следующий шаг для цели: {goal}",
     },
+    "web_search": {
+        "action_type": "web_search",
+        "prompt": "Найди в интернете актуальную информацию по цели: {goal}",
+    },
 }
 
 
 def _run_skill(goal: str, provider: str, attempt_no: int) -> tuple[str, str]:
     g = goal.lower()
+    if _is_web_search_goal(goal):
+        cfg = SKILL_REGISTRY["web_search"]
+        return (cfg["action_type"], cfg["prompt"].format(goal=goal))
     if _is_gigachat_version_goal(goal, provider):
         cfg = SKILL_REGISTRY["gigachat_version_probe"]
         return (cfg["action_type"], cfg["prompt"])
@@ -352,6 +395,8 @@ async def run_autonomous_cycle(
     try:
         if action_type == "llm_query" and action_input:
             execution_text = await client.chat([{"role": "user", "content": action_input}])
+        elif action_type == "web_search" and action_input:
+            execution_text = await _web_search(action_input, max_results=settings.web_search_max_results)
         elif action_type == "shell_safe" and action_input:
             safe_commands = {"python --version", "python3 --version", "uname -a"}
             if action_input in safe_commands:
@@ -452,6 +497,18 @@ async def run_autonomous_cycle(
         "executed_action_type": action_type,
         "executed_action_input": action_input,
     }
+
+
+def _format_chat_autonomy_reply(result: dict) -> str:
+    return (
+        f"Итог: {result.get('result_text', 'НЕТ ДАННЫХ')}\n\n"
+        f"План:\n{result.get('plan_text', '').strip()}\n\n"
+        f"Действие:\n{result.get('action_text', '').strip()}\n\n"
+        f"Выполнение:\n{result.get('execution_text', '').strip()}\n\n"
+        f"Проверка: {result.get('verify_status', 'FAIL')}\n"
+        f"Ревью: {result.get('review_text', '').strip() or '-'}\n\n"
+        f"Ретроспектива:\n{result.get('reflection_text', '').strip()}"
+    )
 
 
 async def _autonomy_worker_loop() -> None:
@@ -573,12 +630,21 @@ async def admin_page(request: Request) -> HTMLResponse:
 async def chat(payload: ChatRequest, request: Request, _: None = Depends(require_auth)) -> JSONResponse:
     try:
         _rate_limit(request)
-        client = get_client(payload.provider)
-        messages = [
-            {"role": "system", "content": build_system_prompt()},
-            {"role": "user", "content": payload.message},
-        ]
-        reply = await client.chat(messages)
+        goal_id = get_or_create_active_goal(payload.message, _username(request))
+        result = await run_autonomous_cycle(payload.message, payload.provider, goal_id=goal_id, attempt_no=1)
+        reply = _format_chat_autonomy_reply(result)
+        save_autonomous_run(
+            goal_id=goal_id,
+            provider=payload.provider,
+            result_text=result["result_text"],
+            execution_text=result["execution_text"],
+            review_text=result["review_text"],
+            plan_text=result["plan_text"],
+            action_text=result["action_text"],
+            verify_status=result["verify_status"],
+            reflection_text=result["reflection_text"],
+            created_by=_username(request),
+        )
         conversation_id = save_conversation(payload.provider, payload.message, reply)
         save_audit_log(_username(request), "chat", request.client.host if request.client else "unknown", payload.provider)
         return JSONResponse({"conversation_id": conversation_id, "reply": reply})
@@ -644,16 +710,24 @@ async def chat_stream(payload: ChatRequest, request: Request, _: None = Depends(
     async def event_stream() -> AsyncIterator[str]:
         try:
             _rate_limit(request)
-            client = get_client(payload.provider)
-            messages = [
-                {"role": "system", "content": build_system_prompt()},
-                {"role": "user", "content": payload.message},
-            ]
-            chunks: list[str] = []
-            async for token in client.stream_chat(messages):
-                chunks.append(token)
+            goal_id = get_or_create_active_goal(payload.message, _username(request))
+            result = await run_autonomous_cycle(payload.message, payload.provider, goal_id=goal_id, attempt_no=1)
+            reply = _format_chat_autonomy_reply(result)
+            save_autonomous_run(
+                goal_id=goal_id,
+                provider=payload.provider,
+                result_text=result["result_text"],
+                execution_text=result["execution_text"],
+                review_text=result["review_text"],
+                plan_text=result["plan_text"],
+                action_text=result["action_text"],
+                verify_status=result["verify_status"],
+                reflection_text=result["reflection_text"],
+                created_by=_username(request),
+            )
+            for part in reply.split(" "):
+                token = part + " "
                 yield f"data: {json.dumps({'type': 'chunk', 'text': token})}\n\n"
-            reply = "".join(chunks)
             conversation_id = save_conversation(payload.provider, payload.message, reply)
             save_audit_log(_username(request), "chat_stream", request.client.host if request.client else "unknown", payload.provider)
             yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id})}\n\n"
@@ -1017,6 +1091,16 @@ async def admin_agent_runs_csv(request: Request, _: None = Depends(require_admin
     for row in rows:
         writer.writerow(list(row))
     return PlainTextResponse(buf.getvalue(), media_type="text/csv")
+
+
+@app.get("/api/admin/memory")
+async def admin_memory(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    items = [
+        {"provider": p, "user_message": u, "assistant_message": a}
+        for p, u, a in get_recent_memories(limit=20)
+    ]
+    feedback = get_feedback_summary(limit=100)
+    return JSONResponse({"items": items, "feedback_summary": feedback})
 
 
 @app.get("/api/admin/agent/goals/{goal_id}/tasks")

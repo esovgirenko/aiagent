@@ -9,7 +9,7 @@
   <body>
     <main class="container">
       <h1>Панель администратора</h1>
-      <p class="subtitle">Управление пользователями, аудитом и автономным воркером</p>
+      <p class="subtitle">Управление пользователями, аудитом, approvals и памятью агента</p>
 
       <section class="controls">
         <a href="/">К чату</a>
@@ -39,12 +39,10 @@
       </section>
 
       <section>
-        <h3>KPI и approvals</h3>
+        <h3>Approvals</h3>
         <section class="controls">
-          <button id="kpi-refresh-btn" type="button">Обновить KPI</button>
           <button id="approvals-refresh-btn" type="button">Обновить approvals</button>
         </section>
-        <pre id="kpi-box" class="chat"></pre>
         <pre id="approvals-box" class="chat"></pre>
         <form id="approval-decision-form" class="chat-form">
           <input id="approval-id-input" type="number" min="1" placeholder="approval id" required />
@@ -58,71 +56,13 @@
       </section>
 
       <section>
-        <h3>Автономный цикл</h3>
-        <form id="agent-run-form" class="chat-form">
-          <input id="goal-input" type="text" placeholder="Цель цикла (например: улучшить обработку ошибок API)" required />
-          <select id="agent-provider">
-            <option value="gigachat">gigachat</option>
-            <option value="openai">openai</option>
-            <option value="ollama">ollama</option>
-          </select>
-          <button type="submit">Запустить цикл</button>
-        </form>
-        <form id="agent-queue-form" class="chat-form">
-          <input id="queue-goal-input" type="text" placeholder="Цель в очередь автономного воркера" required />
-          <select id="queue-provider">
-            <option value="gigachat">gigachat</option>
-            <option value="openai">openai</option>
-            <option value="ollama">ollama</option>
-          </select>
-          <select id="queue-priority">
-            <option value="1">priority 1</option>
-            <option value="2">priority 2</option>
-            <option value="3" selected>priority 3</option>
-            <option value="4">priority 4</option>
-            <option value="5">priority 5</option>
-          </select>
-          <input id="queue-iterations" type="number" min="1" max="200" value="5" placeholder="итераций" required />
-          <button type="submit">Добавить в очередь</button>
-        </form>
+        <h3>Память агента</h3>
         <section class="controls">
-          <button id="worker-start-btn" type="button">Старт воркера</button>
-          <button id="worker-stop-btn" type="button">Стоп воркера</button>
-          <button id="worker-reset-btn" type="button">Сбросить метрики</button>
-          <button id="queue-clear-btn" type="button">Очистить очередь</button>
+          <button id="memory-refresh-btn" type="button">Обновить память</button>
         </section>
-        <p class="subtitle">После добавления цели нажми "Старт воркера". Статус обновляется автоматически.</p>
-        <section class="controls">
-          <label for="runs-verify-filter">Фильтр verify:</label>
-          <select id="runs-verify-filter">
-            <option value="">all</option>
-            <option value="PASS">PASS</option>
-            <option value="FAIL">FAIL</option>
-          </select>
-          <label for="runs-provider-filter">Провайдер:</label>
-          <select id="runs-provider-filter">
-            <option value="">all</option>
-            <option value="gigachat">gigachat</option>
-            <option value="openai">openai</option>
-            <option value="ollama">ollama</option>
-          </select>
-          <button id="runs-filter-btn" type="button">Применить фильтр</button>
-          <a href="/api/admin/agent/runs.csv" target="_blank" rel="noreferrer">Экспорт CSV</a>
-        </section>
-        <pre id="worker-status-box" class="chat"></pre>
-        <pre id="agent-runs-box" class="chat"></pre>
-        <pre id="agent-queue-box" class="chat"></pre>
+        <pre id="memory-box" class="chat"></pre>
       </section>
 
-      <section>
-        <h3>Self-edit pipeline (safe mode)</h3>
-        <form id="self-edit-plan-form" class="chat-form">
-          <input id="self-edit-goal" type="text" placeholder="Цель self-edit плана" required />
-          <button type="submit">Сгенерировать план</button>
-          <button id="self-edit-check-btn" type="button">Запустить check</button>
-        </form>
-        <pre id="self-edit-box" class="chat"></pre>
-      </section>
     </main>
     <script src="/static/admin.js"></script>
   </body>

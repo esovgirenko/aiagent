@@ -21,6 +21,8 @@ class Settings:
     autonomy_reviewer_provider: str = os.getenv("AUTONOMY_REVIEWER_PROVIDER", "openai")
     autonomy_reviewer_enabled: bool = os.getenv("AUTONOMY_REVIEWER_ENABLED", "true").lower() == "true"
     autonomy_self_edit_enabled: bool = os.getenv("AUTONOMY_SELF_EDIT_ENABLED", "false").lower() == "true"
+    web_search_enabled: bool = os.getenv("WEB_SEARCH_ENABLED", "true").lower() == "true"
+    web_search_max_results: int = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
 
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")

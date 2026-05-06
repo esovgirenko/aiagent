@@ -161,6 +161,13 @@ MVP-проект агента с веб-интерфейсом, который:
   - план изменения кода (`/api/admin/agent/self-edit/plan`),
   - dry-run check (`/api/admin/agent/self-edit/check`),
   - журнал self-edit запусков (`/api/admin/agent/self-edit/runs`).
+- Добавлен веб-поиск как навык:
+  - skill `web_search` (DuckDuckGo Instant API),
+  - включается переменной `WEB_SEARCH_ENABLED=true`.
+- Добавлен просмотр памяти в админке:
+  - `GET /api/admin/memory` (последние диалоги + feedback summary).
+- Основной чат теперь использует встроенный автономный цикл (plan/act/verify/reflect),
+  включая web-search skill, вместо запуска автономии через админ-панель.
 
 ## Streaming
 
