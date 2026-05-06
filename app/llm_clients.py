@@ -80,16 +80,25 @@ class GigaChatClient(LLMClient):
         self.auth_url = settings.gigachat_auth_url
         self.api_url = settings.gigachat_api_url
         self.scope = settings.gigachat_scope
+        self.auth_key = settings.gigachat_auth_key
         self.client_id = settings.gigachat_client_id
         self.client_secret = settings.gigachat_client_secret
         self.model = settings.gigachat_model
 
     async def _get_token(self) -> str:
-        if not self.client_id or not self.client_secret:
-            raise RuntimeError("GigaChat credentials are not configured")
-        auth = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        auth_header = ""
+        if self.auth_key:
+            # Some GigaChat setups issue ready-to-use API Authorization Key.
+            auth_header = self.auth_key.strip()
+        elif self.client_id and self.client_secret:
+            auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        else:
+            raise RuntimeError(
+                "GigaChat credentials are not configured. Set GIGACHAT_AUTH_KEY or "
+                "GIGACHAT_CLIENT_ID/GIGACHAT_CLIENT_SECRET."
+            )
         headers = {
-            "Authorization": f"Basic {auth}",
+            "Authorization": f"Basic {auth_header}",
             "RqUID": str(uuid.uuid4()),
             "Content-Type": "application/x-www-form-urlencoded",
         }

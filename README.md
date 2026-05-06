@@ -129,6 +129,9 @@ MVP-проект агента с веб-интерфейсом, который:
 ## Важные замечания
 
 - Для `GigaChat` в MVP используется OAuth + `/chat/completions`.
+- Поддерживаются два режима авторизации GigaChat:
+  - `GIGACHAT_AUTH_KEY` (готовый API Authorization Key, предпочтительно);
+  - или пара `GIGACHAT_CLIENT_ID` + `GIGACHAT_CLIENT_SECRET`.
 - Запросы к GigaChat отправляются с `verify=False`, потому что на некоторых окружениях требуется отдельная настройка сертификатов. Для production лучше установить корректный trust store и включить TLS verification.
 - Не храните реальные ключи в репозитории.
 

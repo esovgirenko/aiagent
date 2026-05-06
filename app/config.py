@@ -28,6 +28,7 @@ class Settings:
         "GIGACHAT_API_URL", "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
     )
     gigachat_scope: str = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+    gigachat_auth_key: str = os.getenv("GIGACHAT_AUTH_KEY", "")
     gigachat_client_id: str = os.getenv("GIGACHAT_CLIENT_ID", "")
     gigachat_client_secret: str = os.getenv("GIGACHAT_CLIENT_SECRET", "")
     gigachat_model: str = os.getenv("GIGACHAT_MODEL", "GigaChat")
