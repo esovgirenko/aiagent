@@ -8,6 +8,7 @@ const queueBox = document.getElementById("agent-queue-box");
 const workerStatusBox = document.getElementById("worker-status-box");
 const workerStartBtn = document.getElementById("worker-start-btn");
 const workerStopBtn = document.getElementById("worker-stop-btn");
+const queueClearBtn = document.getElementById("queue-clear-btn");
 
 async function refreshUsers() {
   const res = await fetch("/api/admin/users");
@@ -43,6 +44,9 @@ async function refreshAgentRuns() {
         "",
         "ДЕЙСТВИЕ:",
         String(item.action_text || "").trim(),
+        "",
+        "ВЫПОЛНЕНИЕ:",
+        String(item.execution_text || "").trim(),
         "",
         `ПРОВЕРКА: ${item.verify_status}`,
         "",
@@ -166,6 +170,16 @@ workerStopBtn.addEventListener("click", async () => {
   });
   if (!res.ok) alert("Не удалось остановить воркер");
   await refreshWorkerStatus();
+  await refreshAudit();
+});
+
+queueClearBtn.addEventListener("click", async () => {
+  const res = await fetch("/api/admin/agent/queue/clear", { method: "POST" });
+  if (!res.ok) {
+    alert("Не удалось очистить очередь");
+    return;
+  }
+  await refreshAgentQueue();
   await refreshAudit();
 });
 

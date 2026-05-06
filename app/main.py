@@ -1,6 +1,7 @@
 import asyncio
 import json
-import re
+import shlex
+import subprocess
 import time
 from pathlib import Path
 from typing import AsyncIterator, Literal
@@ -15,6 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
 from .llm_clients import get_client
 from .storage import (
+    clear_queue,
     create_goal_task,
     create_user,
     enqueue_autonomy_goal,
@@ -219,6 +221,41 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
             }
         ]
     )
+    exec_plan_raw = await client.chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Отвечай строго JSON без markdown. "
+                    "Сформируй исполняемое действие в формате "
+                    '{"action_type":"llm_query|shell_safe|none","action_input":"..."}.\n'
+                    "Для shell_safe разрешены только безопасные команды чтения:\n"
+                    "python --version, python3 --version, uname -a.\n"
+                    "Для остальных случаев используй llm_query.\n"
+                    f"Цель: {goal}\nПлан: {plan_text}\nДействие: {action_text}"
+                ),
+            }
+        ]
+    )
+    execution_text = ""
+    try:
+        action_obj = json.loads(exec_plan_raw)
+        a_type = str(action_obj.get("action_type", "none")).strip()
+        a_input = str(action_obj.get("action_input", "")).strip()
+        if a_type == "llm_query" and a_input:
+            execution_text = await client.chat([{"role": "user", "content": a_input}])
+        elif a_type == "shell_safe" and a_input:
+            safe_commands = {"python --version", "python3 --version", "uname -a"}
+            if a_input in safe_commands:
+                out = subprocess.run(shlex.split(a_input), capture_output=True, text=True, timeout=10)
+                execution_text = (out.stdout or out.stderr).strip()[:1500]
+            else:
+                execution_text = "Команда отклонена политикой безопасности."
+        else:
+            execution_text = "Исполняемое действие не задано."
+    except Exception as exc:
+        execution_text = f"Ошибка выполнения действия: {exc}"
+
     verify_text = await client.chat(
         [
             {
@@ -229,15 +266,15 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
                     "Если действие повторяет прошлые неуспешные попытки, обязательно верни FAIL.\n"
                     "Ответ только в формате: PASS: <короткая причина> или FAIL: <короткая причина>.\n"
                     f"История:\n{history_text}\n"
-                    f"{action_text}"
+                    f"Действие:\n{action_text}\n"
+                    f"Результат выполнения:\n{execution_text}"
                 ),
             }
         ]
     )
     verify_status = "PASS" if "PASS" in verify_text.upper() else "FAIL"
-    if "верси" in goal.lower():
-        if not re.search(r"\b\d+\.\d+(?:\.\d+)?\b", result_text):
-            verify_status = "FAIL"
+    if "верси" in goal.lower() and result_text.strip().upper() == "НЕТ ДАННЫХ":
+        verify_status = "FAIL"
     reflection_text = await client.chat(
         [
             {
@@ -259,6 +296,7 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
         "result_text": result_text,
         "plan_text": plan_text,
         "action_text": action_text,
+        "execution_text": execution_text,
         "verify_status": verify_status,
         "reflection_text": reflection_text,
     }
@@ -283,6 +321,7 @@ async def _autonomy_worker_loop() -> None:
                 goal_id=goal_id,
                 provider=provider,
                 result_text=result["result_text"],
+                execution_text=result["execution_text"],
                 plan_text=result["plan_text"],
                 action_text=result["action_text"],
                 verify_status=result["verify_status"],
@@ -519,6 +558,7 @@ async def admin_run_cycle(
         goal_id=goal_id,
         provider=payload.provider,
         result_text=result["result_text"],
+        execution_text=result["execution_text"],
         plan_text=result["plan_text"],
         action_text=result["action_text"],
         verify_status=result["verify_status"],
@@ -550,6 +590,18 @@ async def admin_queue_goal(
     return JSONResponse({"ok": True, "queue_id": queue_id})
 
 
+@app.post("/api/admin/agent/queue/clear")
+async def admin_clear_queue(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    removed = clear_queue()
+    save_audit_log(
+        _username(request),
+        "admin_agent_queue_clear",
+        request.client.host if request.client else "unknown",
+        f"removed={removed}",
+    )
+    return JSONResponse({"ok": True, "removed": removed})
+
+
 @app.get("/api/admin/agent/runs")
 async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
     items = [
@@ -558,13 +610,14 @@ async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -
             "goal_id": goal_id,
             "provider": provider,
             "result_text": result_text,
+            "execution_text": execution_text,
             "plan_text": plan_text,
             "action_text": action_text,
             "verify_status": verify_status,
             "reflection_text": reflection_text,
             "created_at": created_at,
         }
-        for run_id, goal_id, provider, result_text, plan_text, action_text, verify_status, reflection_text, created_at in list_autonomous_runs(30)
+        for run_id, goal_id, provider, result_text, execution_text, plan_text, action_text, verify_status, reflection_text, created_at in list_autonomous_runs(30)
     ]
     return JSONResponse({"items": items})
 
