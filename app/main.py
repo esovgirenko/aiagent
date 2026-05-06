@@ -27,6 +27,7 @@ from .storage import (
     init_db,
     list_autonomous_runs,
     list_audit_logs,
+    list_goal_run_history,
     list_goal_tasks,
     list_queue_items,
     list_users,
@@ -167,8 +168,15 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
-async def run_autonomous_cycle(goal: str, provider: str) -> dict:
+async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = None) -> dict:
     client = get_client(provider)
+    history_items = list_goal_run_history(goal_id, limit=5) if goal_id else []
+    history_text = "\n".join(
+        [
+            f"- prev_action: {a[:180]} | verify: {v} | reflection: {r[:180]}"
+            for a, v, r in history_items
+        ]
+    ) or "- history is empty"
     result_text = await client.chat(
         [
             {
@@ -190,6 +198,8 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
                     "Отвечай строго на русском языке.\n"
                     "Составь краткий план из 3 шагов для этой цели:\n"
                     f"{goal}\n"
+                    "Контекст прошлых попыток (избегай повторов):\n"
+                    f"{history_text}\n"
                     "Формат: маркированный список."
                 ),
             }
@@ -202,7 +212,9 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
                 "content": (
                     "Отвечай строго на русском языке.\n"
                     "По этому плану дай следующее конкретное действие для выполнения прямо сейчас.\n"
-                    f"{plan_text}"
+                    "Важно: действие должно ОТЛИЧАТЬСЯ от прошлых неуспешных попыток.\n"
+                    f"Прошлые попытки:\n{history_text}\n"
+                    f"Новый план:\n{plan_text}"
                 ),
             }
         ]
@@ -214,7 +226,9 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
                 "content": (
                     "Отвечай строго на русском языке.\n"
                     "Оцени, насколько действие конкретно и проверяемо. "
+                    "Если действие повторяет прошлые неуспешные попытки, обязательно верни FAIL.\n"
                     "Ответ только в формате: PASS: <короткая причина> или FAIL: <короткая причина>.\n"
+                    f"История:\n{history_text}\n"
                     f"{action_text}"
                 ),
             }
@@ -261,7 +275,7 @@ async def _autonomy_worker_loop() -> None:
         try:
             goal_id = get_or_create_active_goal(goal, created_by)
             task_id = create_goal_task(goal_id, f"Auto cycle action for: {goal}", priority=1)
-            result = await run_autonomous_cycle(goal, provider)
+            result = await run_autonomous_cycle(goal, provider, goal_id=goal_id)
             is_success = result["verify_status"] == "PASS" and result["result_text"].strip().upper() != "НЕТ ДАННЫХ"
             if is_success:
                 mark_task_done(task_id)
@@ -498,7 +512,7 @@ async def admin_run_cycle(
     _rate_limit(request)
     goal_id = get_or_create_active_goal(payload.goal, _username(request))
     task_id = create_goal_task(goal_id, f"Cycle action for: {payload.goal}", priority=1)
-    result = await run_autonomous_cycle(payload.goal, payload.provider)
+    result = await run_autonomous_cycle(payload.goal, payload.provider, goal_id=goal_id)
     if result["verify_status"] == "PASS":
         mark_task_done(task_id)
     run_id = save_autonomous_run(

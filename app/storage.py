@@ -388,6 +388,21 @@ def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str,
     ]
 
 
+def list_goal_run_history(goal_id: int, limit: int = 5) -> List[Tuple[str, str, str]]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT action_text, verify_status, reflection_text
+            FROM autonomous_runs
+            WHERE goal_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (goal_id, limit),
+        ).fetchall()
+    return [(str(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
 def enqueue_autonomy_goal(
     goal: str, provider: str, created_by: str, priority: int = 1, target_iterations: int = 1
 ) -> int:
