@@ -85,6 +85,7 @@ _AUTONOMY_WORKER_ENABLED = False
 _AUTONOMY_WORKER_TASK: asyncio.Task | None = None
 _AUTONOMY_ITERATIONS = 0
 _AUTONOMY_FAIL_STREAK = 0
+_AUTONOMY_IDLE_CYCLES = 0
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -353,12 +354,18 @@ async def run_autonomous_cycle(
 
 
 async def _autonomy_worker_loop() -> None:
-    global _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK, _AUTONOMY_WORKER_ENABLED
+    global _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK, _AUTONOMY_WORKER_ENABLED, _AUTONOMY_IDLE_CYCLES
     while _AUTONOMY_WORKER_ENABLED and _AUTONOMY_ITERATIONS < settings.autonomy_max_iterations:
         item = fetch_next_queued_goal()
         if not item:
+            _AUTONOMY_IDLE_CYCLES += 1
+            if _AUTONOMY_IDLE_CYCLES >= settings.autonomy_idle_cycles_before_stop:
+                _AUTONOMY_WORKER_ENABLED = False
+                save_audit_log("worker", "autonomy_worker_auto_stop_idle", "worker", f"idle_cycles={_AUTONOMY_IDLE_CYCLES}")
+                break
             await asyncio.sleep(settings.autonomy_interval_sec)
             continue
+        _AUTONOMY_IDLE_CYCLES = 0
         queue_id, goal, provider, created_by, current_attempt, target_iterations = item
         try:
             goal_id = get_or_create_active_goal(goal, created_by)
@@ -696,11 +703,12 @@ async def admin_agent_queue(request: Request, _: None = Depends(require_admin)) 
 async def admin_agent_worker(
     payload: AgentWorkerRequest, request: Request, _: None = Depends(require_admin)
 ) -> JSONResponse:
-    global _AUTONOMY_WORKER_ENABLED, _AUTONOMY_WORKER_TASK, _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK
+    global _AUTONOMY_WORKER_ENABLED, _AUTONOMY_WORKER_TASK, _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK, _AUTONOMY_IDLE_CYCLES
     if payload.enabled:
         _AUTONOMY_WORKER_ENABLED = True
         _AUTONOMY_ITERATIONS = 0
         _AUTONOMY_FAIL_STREAK = 0
+        _AUTONOMY_IDLE_CYCLES = 0
         if not _AUTONOMY_WORKER_TASK or _AUTONOMY_WORKER_TASK.done():
             _AUTONOMY_WORKER_TASK = asyncio.create_task(_autonomy_worker_loop())
         save_audit_log(_username(request), "admin_agent_worker_start", request.client.host if request.client else "unknown")
@@ -715,6 +723,7 @@ async def admin_agent_worker(
             "enabled": _AUTONOMY_WORKER_ENABLED,
             "iterations": _AUTONOMY_ITERATIONS,
             "fail_streak": _AUTONOMY_FAIL_STREAK,
+            "idle_cycles": _AUTONOMY_IDLE_CYCLES,
             "max_iterations": settings.autonomy_max_iterations,
         }
     )
@@ -723,12 +732,20 @@ async def admin_agent_worker(
 @app.get("/api/admin/agent/worker")
 async def admin_agent_worker_status(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
     running = bool(_AUTONOMY_WORKER_TASK and not _AUTONOMY_WORKER_TASK.done() and _AUTONOMY_WORKER_ENABLED)
+    state = "RUNNING"
+    if not running and _AUTONOMY_WORKER_ENABLED:
+        state = "IDLE"
+    if not _AUTONOMY_WORKER_ENABLED:
+        state = "STOPPED"
     return JSONResponse(
         {
+            "state": state,
             "enabled": _AUTONOMY_WORKER_ENABLED,
             "running": running,
             "iterations": _AUTONOMY_ITERATIONS,
             "fail_streak": _AUTONOMY_FAIL_STREAK,
+            "idle_cycles": _AUTONOMY_IDLE_CYCLES,
+            "idle_stop_limit": settings.autonomy_idle_cycles_before_stop,
             "fail_streak_limit": settings.autonomy_fail_streak_limit,
             "max_iterations": settings.autonomy_max_iterations,
             "interval_sec": settings.autonomy_interval_sec,

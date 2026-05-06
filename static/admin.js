@@ -80,10 +80,11 @@ async function refreshWorkerStatus() {
   const res = await fetch("/api/admin/agent/worker");
   const data = await res.json();
   workerStatusBox.textContent =
-    `Состояние: ${data.running ? "RUNNING" : "STOPPED"}\n` +
+    `Состояние: ${data.state}\n` +
     `Включен: ${data.enabled}\n` +
     `Итерации: ${data.iterations}/${data.max_iterations}\n` +
     `Серия ошибок: ${data.fail_streak}/${data.fail_streak_limit}\n` +
+    `Холостой режим: ${data.idle_cycles}/${data.idle_stop_limit}\n` +
     `Интервал: ${data.interval_sec} сек`;
 }
 
