@@ -87,6 +87,9 @@ _AUTONOMY_WORKER_TASK: asyncio.Task | None = None
 _AUTONOMY_ITERATIONS = 0
 _AUTONOMY_FAIL_STREAK = 0
 _AUTONOMY_IDLE_CYCLES = 0
+_AUTONOMY_SUCCESS_COUNT = 0
+_AUTONOMY_FAILURE_COUNT = 0
+_AUTONOMY_LAST_SUMMARY_TS = time.time()
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -356,7 +359,19 @@ async def run_autonomous_cycle(
 
 async def _autonomy_worker_loop() -> None:
     global _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK, _AUTONOMY_WORKER_ENABLED, _AUTONOMY_IDLE_CYCLES
+    global _AUTONOMY_SUCCESS_COUNT, _AUTONOMY_FAILURE_COUNT, _AUTONOMY_LAST_SUMMARY_TS
     while _AUTONOMY_WORKER_ENABLED and _AUTONOMY_ITERATIONS < settings.autonomy_max_iterations:
+        now = time.time()
+        if now - _AUTONOMY_LAST_SUMMARY_TS >= settings.autonomy_summary_interval_sec:
+            total = _AUTONOMY_SUCCESS_COUNT + _AUTONOMY_FAILURE_COUNT
+            success_rate = (100.0 * _AUTONOMY_SUCCESS_COUNT / total) if total else 0.0
+            save_audit_log(
+                "worker",
+                "autonomy_worker_hourly_summary",
+                "worker",
+                f"total={total},success={_AUTONOMY_SUCCESS_COUNT},fail={_AUTONOMY_FAILURE_COUNT},success_rate={success_rate:.1f}%",
+            )
+            _AUTONOMY_LAST_SUMMARY_TS = now
         item = fetch_next_queued_goal()
         if not item:
             _AUTONOMY_IDLE_CYCLES += 1
@@ -398,6 +413,10 @@ async def _autonomy_worker_loop() -> None:
                     lower_queue_priority(queue_id)
             _AUTONOMY_ITERATIONS += 1
             _AUTONOMY_FAIL_STREAK = 0 if is_success else _AUTONOMY_FAIL_STREAK + 1
+            if is_success:
+                _AUTONOMY_SUCCESS_COUNT += 1
+            else:
+                _AUTONOMY_FAILURE_COUNT += 1
             save_audit_log(created_by, "autonomy_worker_cycle", "worker", f"queue_id={queue_id},run_id={run_id}")
             if _AUTONOMY_FAIL_STREAK >= settings.autonomy_fail_streak_limit:
                 _AUTONOMY_WORKER_ENABLED = False
@@ -710,11 +729,13 @@ async def admin_agent_worker(
     payload: AgentWorkerRequest, request: Request, _: None = Depends(require_admin)
 ) -> JSONResponse:
     global _AUTONOMY_WORKER_ENABLED, _AUTONOMY_WORKER_TASK, _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK, _AUTONOMY_IDLE_CYCLES
+    global _AUTONOMY_SUCCESS_COUNT, _AUTONOMY_FAILURE_COUNT, _AUTONOMY_LAST_SUMMARY_TS
     if payload.enabled:
         _AUTONOMY_WORKER_ENABLED = True
         _AUTONOMY_ITERATIONS = 0
         _AUTONOMY_FAIL_STREAK = 0
         _AUTONOMY_IDLE_CYCLES = 0
+        _AUTONOMY_LAST_SUMMARY_TS = time.time()
         if not _AUTONOMY_WORKER_TASK or _AUTONOMY_WORKER_TASK.done():
             _AUTONOMY_WORKER_TASK = asyncio.create_task(_autonomy_worker_loop())
         save_audit_log(_username(request), "admin_agent_worker_start", request.client.host if request.client else "unknown")
@@ -730,9 +751,29 @@ async def admin_agent_worker(
             "iterations": _AUTONOMY_ITERATIONS,
             "fail_streak": _AUTONOMY_FAIL_STREAK,
             "idle_cycles": _AUTONOMY_IDLE_CYCLES,
+            "success_count": _AUTONOMY_SUCCESS_COUNT,
+            "failure_count": _AUTONOMY_FAILURE_COUNT,
             "max_iterations": settings.autonomy_max_iterations,
         }
     )
+
+
+@app.post("/api/admin/agent/worker/reset-metrics")
+async def admin_agent_worker_reset_metrics(request: Request, _: None = Depends(require_admin)) -> JSONResponse:
+    global _AUTONOMY_ITERATIONS, _AUTONOMY_FAIL_STREAK, _AUTONOMY_IDLE_CYCLES
+    global _AUTONOMY_SUCCESS_COUNT, _AUTONOMY_FAILURE_COUNT, _AUTONOMY_LAST_SUMMARY_TS
+    _AUTONOMY_ITERATIONS = 0
+    _AUTONOMY_FAIL_STREAK = 0
+    _AUTONOMY_IDLE_CYCLES = 0
+    _AUTONOMY_SUCCESS_COUNT = 0
+    _AUTONOMY_FAILURE_COUNT = 0
+    _AUTONOMY_LAST_SUMMARY_TS = time.time()
+    save_audit_log(
+        _username(request),
+        "admin_agent_worker_reset_metrics",
+        request.client.host if request.client else "unknown",
+    )
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/admin/agent/worker")
@@ -752,9 +793,12 @@ async def admin_agent_worker_status(request: Request, _: None = Depends(require_
             "fail_streak": _AUTONOMY_FAIL_STREAK,
             "idle_cycles": _AUTONOMY_IDLE_CYCLES,
             "idle_stop_limit": settings.autonomy_idle_cycles_before_stop,
+            "success_count": _AUTONOMY_SUCCESS_COUNT,
+            "failure_count": _AUTONOMY_FAILURE_COUNT,
             "fail_streak_limit": settings.autonomy_fail_streak_limit,
             "max_iterations": settings.autonomy_max_iterations,
             "interval_sec": settings.autonomy_interval_sec,
+            "summary_interval_sec": settings.autonomy_summary_interval_sec,
         }
     )
 

@@ -145,6 +145,9 @@ MVP-проект агента с веб-интерфейсом, который:
   - экспоненциальный backoff перед следующей попыткой,
   - автопонижение приоритета проблемной задачи,
   - отображение `next_retry_at` в очереди.
+- Worker публикует периодический health-summary в `audit_logs`:
+  - total/success/fail/success_rate за период `AUTONOMY_SUMMARY_INTERVAL_SEC`.
+- В admin UI доступна кнопка "Сбросить метрики" воркера.
 
 ## Streaming
 

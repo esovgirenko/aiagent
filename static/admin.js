@@ -8,6 +8,7 @@ const queueBox = document.getElementById("agent-queue-box");
 const workerStatusBox = document.getElementById("worker-status-box");
 const workerStartBtn = document.getElementById("worker-start-btn");
 const workerStopBtn = document.getElementById("worker-stop-btn");
+const workerResetBtn = document.getElementById("worker-reset-btn");
 const queueClearBtn = document.getElementById("queue-clear-btn");
 
 async function refreshUsers() {
@@ -84,8 +85,10 @@ async function refreshWorkerStatus() {
     `Включен: ${data.enabled}\n` +
     `Итерации: ${data.iterations}/${data.max_iterations}\n` +
     `Серия ошибок: ${data.fail_streak}/${data.fail_streak_limit}\n` +
+    `Успешно/ошибки: ${data.success_count}/${data.failure_count}\n` +
     `Холостой режим: ${data.idle_cycles}/${data.idle_stop_limit}\n` +
-    `Интервал: ${data.interval_sec} сек`;
+    `Интервал: ${data.interval_sec} сек\n` +
+    `Интервал сводки: ${data.summary_interval_sec} сек`;
 }
 
 createUserForm.addEventListener("submit", async (e) => {
@@ -170,6 +173,16 @@ workerStopBtn.addEventListener("click", async () => {
     body: JSON.stringify({ enabled: false }),
   });
   if (!res.ok) alert("Не удалось остановить воркер");
+  await refreshWorkerStatus();
+  await refreshAudit();
+});
+
+workerResetBtn.addEventListener("click", async () => {
+  const res = await fetch("/api/admin/agent/worker/reset-metrics", { method: "POST" });
+  if (!res.ok) {
+    alert("Не удалось сбросить метрики");
+    return;
+  }
   await refreshWorkerStatus();
   await refreshAudit();
 });
