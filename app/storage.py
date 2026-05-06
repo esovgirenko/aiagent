@@ -98,6 +98,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 goal_id INTEGER NOT NULL,
                 provider TEXT NOT NULL,
+                result_text TEXT NOT NULL DEFAULT '',
                 plan_text TEXT NOT NULL,
                 action_text TEXT NOT NULL,
                 verify_status TEXT NOT NULL,
@@ -135,6 +136,9 @@ def init_db() -> None:
             conn.execute("ALTER TABLE autonomy_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
         if "attempts" not in qcols:
             conn.execute("ALTER TABLE autonomy_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        rcols = [r[1] for r in conn.execute("PRAGMA table_info(autonomous_runs)").fetchall()]
+        if "result_text" not in rcols:
+            conn.execute("ALTER TABLE autonomous_runs ADD COLUMN result_text TEXT NOT NULL DEFAULT ''")
         conn.commit()
 
 
@@ -344,6 +348,7 @@ def mark_task_done(task_id: int) -> None:
 def save_autonomous_run(
     goal_id: int,
     provider: str,
+    result_text: str,
     plan_text: str,
     action_text: str,
     verify_status: str,
@@ -354,20 +359,20 @@ def save_autonomous_run(
         cur = conn.execute(
             """
             INSERT INTO autonomous_runs(
-                goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                goal_id, provider, result_text, plan_text, action_text, verify_status, reflection_text, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_by),
+            (goal_id, provider, result_text, plan_text, action_text, verify_status, reflection_text, created_by),
         )
         conn.commit()
         return int(cur.lastrowid)
 
 
-def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str, str, str, str]]:
+def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str, str, str, str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT id, goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_at
+            SELECT id, goal_id, provider, result_text, plan_text, action_text, verify_status, reflection_text, created_at
             FROM autonomous_runs
             ORDER BY id DESC
             LIMIT ?
@@ -375,7 +380,7 @@ def list_autonomous_runs(limit: int = 30) -> List[Tuple[int, int, str, str, str,
             (limit,),
         ).fetchall()
     return [
-        (int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]), str(r[7]))
+        (int(r[0]), int(r[1]), str(r[2]), str(r[3]), str(r[4]), str(r[5]), str(r[6]), str(r[7]), str(r[8]))
         for r in rows
     ]
 

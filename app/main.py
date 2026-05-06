@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import AsyncIterator, Literal
@@ -166,6 +167,19 @@ def require_admin(request: Request) -> None:
 
 async def run_autonomous_cycle(goal: str, provider: str) -> dict:
     client = get_client(provider)
+    result_text = await client.chat(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "Отвечай строго на русском языке.\n"
+                    "Дай ИТОГОВЫЙ ответ на цель одной короткой фразой.\n"
+                    "Если данных недостаточно, ответь ровно: НЕТ ДАННЫХ.\n"
+                    f"Цель: {goal}"
+                ),
+            }
+        ]
+    )
     plan_text = await client.chat(
         [
             {
@@ -205,6 +219,9 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
         ]
     )
     verify_status = "PASS" if "PASS" in verify_text.upper() else "FAIL"
+    if "верси" in goal.lower():
+        if not re.search(r"\b\d+\.\d+(?:\.\d+)?\b", result_text):
+            verify_status = "FAIL"
     reflection_text = await client.chat(
         [
             {
@@ -223,6 +240,7 @@ async def run_autonomous_cycle(goal: str, provider: str) -> dict:
         ]
     )
     return {
+        "result_text": result_text,
         "plan_text": plan_text,
         "action_text": action_text,
         "verify_status": verify_status,
@@ -247,6 +265,7 @@ async def _autonomy_worker_loop() -> None:
             run_id = save_autonomous_run(
                 goal_id=goal_id,
                 provider=provider,
+                result_text=result["result_text"],
                 plan_text=result["plan_text"],
                 action_text=result["action_text"],
                 verify_status=result["verify_status"],
@@ -468,6 +487,7 @@ async def admin_run_cycle(
     run_id = save_autonomous_run(
         goal_id=goal_id,
         provider=payload.provider,
+        result_text=result["result_text"],
         plan_text=result["plan_text"],
         action_text=result["action_text"],
         verify_status=result["verify_status"],
@@ -504,13 +524,14 @@ async def admin_agent_runs(request: Request, _: None = Depends(require_admin)) -
             "id": run_id,
             "goal_id": goal_id,
             "provider": provider,
+            "result_text": result_text,
             "plan_text": plan_text,
             "action_text": action_text,
             "verify_status": verify_status,
             "reflection_text": reflection_text,
             "created_at": created_at,
         }
-        for run_id, goal_id, provider, plan_text, action_text, verify_status, reflection_text, created_at in list_autonomous_runs(30)
+        for run_id, goal_id, provider, result_text, plan_text, action_text, verify_status, reflection_text, created_at in list_autonomous_runs(30)
     ]
     return JSONResponse({"items": items})
 
