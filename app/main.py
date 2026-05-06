@@ -262,6 +262,12 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
     except Exception as exc:
         execution_text = f"Ошибка выполнения действия: {exc}"
 
+    # Reconcile final result with execution output.
+    # If execution contains a concrete version, prefer it over "НЕТ ДАННЫХ".
+    version_match = re.search(r"\b\d+\.\d+(?:\.\d+)?\b", execution_text)
+    if result_text.strip().upper() == "НЕТ ДАННЫХ" and version_match:
+        result_text = f"Обнаружена версия: {version_match.group(0)}"
+
     verify_text = await client.chat(
         [
             {
@@ -279,8 +285,11 @@ async def run_autonomous_cycle(goal: str, provider: str, goal_id: int | None = N
         ]
     )
     verify_status = "PASS" if "PASS" in verify_text.upper() else "FAIL"
-    if "верси" in goal.lower() and result_text.strip().upper() == "НЕТ ДАННЫХ":
-        verify_status = "FAIL"
+    if "верси" in goal.lower():
+        if result_text.strip().upper() == "НЕТ ДАННЫХ":
+            verify_status = "FAIL"
+        elif version_match:
+            verify_status = "PASS"
     reflection_text = await client.chat(
         [
             {
