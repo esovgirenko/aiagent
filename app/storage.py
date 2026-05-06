@@ -159,7 +159,10 @@ def init_db() -> None:
         if "target_iterations" not in qcols:
             conn.execute("ALTER TABLE autonomy_queue ADD COLUMN target_iterations INTEGER NOT NULL DEFAULT 1")
         if "next_retry_at" not in qcols:
-            conn.execute("ALTER TABLE autonomy_queue ADD COLUMN next_retry_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+            conn.execute("ALTER TABLE autonomy_queue ADD COLUMN next_retry_at TIMESTAMP")
+            conn.execute(
+                "UPDATE autonomy_queue SET next_retry_at = CURRENT_TIMESTAMP WHERE next_retry_at IS NULL"
+            )
         rcols = [r[1] for r in conn.execute("PRAGMA table_info(autonomous_runs)").fetchall()]
         if "result_text" not in rcols:
             conn.execute("ALTER TABLE autonomous_runs ADD COLUMN result_text TEXT NOT NULL DEFAULT ''")
@@ -438,6 +441,10 @@ def enqueue_autonomy_goal(
             """,
             (goal, provider, created_by, priority, target_iterations),
         )
+        conn.execute(
+            "UPDATE autonomy_queue SET next_retry_at = CURRENT_TIMESTAMP WHERE id = ? AND next_retry_at IS NULL",
+            (int(cur.lastrowid),),
+        )
         conn.commit()
         return int(cur.lastrowid)
 
@@ -449,7 +456,7 @@ def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str, int, int, int
             SELECT id, goal, provider, created_by, attempts, target_iterations, priority
             FROM autonomy_queue
             WHERE status = 'queued'
-              AND datetime(next_retry_at) <= datetime('now')
+              AND datetime(COALESCE(next_retry_at, CURRENT_TIMESTAMP)) <= datetime('now')
             ORDER BY priority DESC, id ASC
             LIMIT 1
             """
