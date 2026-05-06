@@ -5,6 +5,8 @@ const approvalsBox = document.getElementById("approvals-box");
 const approvalsRefreshBtn = document.getElementById("approvals-refresh-btn");
 const memoryRefreshBtn = document.getElementById("memory-refresh-btn");
 const memoryBox = document.getElementById("memory-box");
+const reasoningRefreshBtn = document.getElementById("reasoning-refresh-btn");
+const reasoningBox = document.getElementById("reasoning-box");
 const approvalDecisionForm = document.getElementById("approval-decision-form");
 
 async function refreshUsers() {
@@ -49,6 +51,29 @@ async function refreshMemory() {
   ].join("\n\n");
 }
 
+async function refreshReasoning() {
+  const res = await fetch("/api/admin/agent/runs");
+  const data = await res.json();
+  const items = data.items || [];
+  if (!items.length) {
+    reasoningBox.textContent = "Рассуждения: пока нет запусков.";
+    return;
+  }
+  reasoningBox.textContent = items
+    .slice(0, 10)
+    .map(
+      (r) =>
+        `#${r.id} | ${r.created_at} | provider=${r.provider}\n` +
+        `План: ${r.plan_text || "-"}\n` +
+        `Действие: ${r.action_text || "-"}\n` +
+        `Выполнение: ${r.execution_text || "-"}\n` +
+        `Проверка: ${r.verify_status}\n` +
+        `Ревью: ${r.review_text || "-"}\n` +
+        `Ретроспектива: ${r.reflection_text || "-"}`
+    )
+    .join("\n\n");
+}
+
 createUserForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const username = document.getElementById("new-username").value.trim();
@@ -90,8 +115,10 @@ approvalDecisionForm.addEventListener("submit", async (e) => {
 
 approvalsRefreshBtn.addEventListener("click", refreshApprovals);
 memoryRefreshBtn.addEventListener("click", refreshMemory);
+reasoningRefreshBtn.addEventListener("click", refreshReasoning);
 
 refreshUsers();
 refreshAudit();
 refreshApprovals();
 refreshMemory();
+refreshReasoning();

@@ -248,29 +248,51 @@ def _is_web_search_goal(goal: str) -> bool:
 async def _web_search(query: str, max_results: int = 5) -> str:
     if not settings.web_search_enabled:
         return "Веб-поиск отключен настройкой WEB_SEARCH_ENABLED."
-    params = urlencode({"q": query, "format": "json", "no_html": 1, "skip_disambig": 1})
-    url = f"https://api.duckduckgo.com/?{params}"
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
     lines: list[str] = []
-    abstract = str(data.get("AbstractText", "")).strip()
-    if abstract:
-        lines.append(f"- {abstract}")
-    related = data.get("RelatedTopics") or []
-    added = 0
-    for item in related:
-        if isinstance(item, dict) and item.get("Text"):
-            text = str(item["Text"]).strip()
-            first_url = str(item.get("FirstURL", "")).strip()
-            lines.append(f"- {text}" + (f" ({first_url})" if first_url else ""))
-            added += 1
-        if added >= max_results:
-            break
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "ai-agent/1.0"}) as client:
+        # Primary source: DuckDuckGo Instant API.
+        try:
+            params = urlencode({"q": query, "format": "json", "no_html": 1, "skip_disambig": 1})
+            url = f"https://api.duckduckgo.com/?{params}"
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            abstract = str(data.get("AbstractText", "")).strip()
+            if abstract:
+                lines.append(f"- {abstract}")
+            related = data.get("RelatedTopics") or []
+            for item in related:
+                if isinstance(item, dict) and item.get("Text"):
+                    text = str(item["Text"]).strip()
+                    first_url = str(item.get("FirstURL", "")).strip()
+                    lines.append(f"- {text}" + (f" ({first_url})" if first_url else ""))
+                if len(lines) >= max_results:
+                    break
+        except Exception:
+            pass
+
+        # Fallback source: Wikipedia OpenSearch (RU).
+        if not lines:
+            try:
+                wiki_url = f"https://ru.wikipedia.org/w/api.php?{urlencode({'action': 'opensearch', 'search': query, 'limit': max_results, 'namespace': 0, 'format': 'json'})}"
+                wiki_resp = await client.get(wiki_url)
+                wiki_resp.raise_for_status()
+                payload = wiki_resp.json()
+                titles = payload[1] if isinstance(payload, list) and len(payload) > 1 else []
+                descs = payload[2] if isinstance(payload, list) and len(payload) > 2 else []
+                urls = payload[3] if isinstance(payload, list) and len(payload) > 3 else []
+                for idx, title in enumerate(titles):
+                    desc = str(descs[idx]).strip() if idx < len(descs) else ""
+                    link = str(urls[idx]).strip() if idx < len(urls) else ""
+                    lines.append(f"- {title}: {desc}" + (f" ({link})" if link else ""))
+                    if len(lines) >= max_results:
+                        break
+            except Exception:
+                pass
+
     if not lines:
         return "НЕТ ДАННЫХ"
-    return "Результаты веб-поиска:\n" + "\n".join(lines[: max_results + 1])
+    return "Результаты веб-поиска:\n" + "\n".join(lines[:max_results])
 
 
 SKILL_REGISTRY: dict[str, dict[str, str]] = {
@@ -298,7 +320,7 @@ SKILL_REGISTRY: dict[str, dict[str, str]] = {
     },
     "web_search": {
         "action_type": "web_search",
-        "prompt": "Найди в интернете актуальную информацию по цели: {goal}",
+        "prompt": "{goal}",
     },
 }
 
@@ -500,15 +522,7 @@ async def run_autonomous_cycle(
 
 
 def _format_chat_autonomy_reply(result: dict) -> str:
-    return (
-        f"Итог: {result.get('result_text', 'НЕТ ДАННЫХ')}\n\n"
-        f"План:\n{result.get('plan_text', '').strip()}\n\n"
-        f"Действие:\n{result.get('action_text', '').strip()}\n\n"
-        f"Выполнение:\n{result.get('execution_text', '').strip()}\n\n"
-        f"Проверка: {result.get('verify_status', 'FAIL')}\n"
-        f"Ревью: {result.get('review_text', '').strip() or '-'}\n\n"
-        f"Ретроспектива:\n{result.get('reflection_text', '').strip()}"
-    )
+    return str(result.get("result_text", "НЕТ ДАННЫХ")).strip() or "НЕТ ДАННЫХ"
 
 
 async def _autonomy_worker_loop() -> None:
