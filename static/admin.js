@@ -71,7 +71,7 @@ async function refreshAgentQueue() {
     .map(
       (q) =>
         `#${q.id} [${q.status}] prio=${q.priority} tries=${q.attempts}/${q.target_iterations}\n` +
-        `goal: ${q.goal}\nprovider: ${q.provider}\nerror: ${q.last_error || "-"}`
+        `goal: ${q.goal}\nprovider: ${q.provider}\nnext_retry_at: ${q.next_retry_at}\nerror: ${q.last_error || "-"}`
     )
     .join("\n\n");
 }

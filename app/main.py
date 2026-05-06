@@ -34,6 +34,7 @@ from .storage import (
     list_goal_tasks,
     list_queue_items,
     list_users,
+    lower_queue_priority,
     mark_queue_item_done,
     mark_queue_item_failed,
     mark_task_done,
@@ -366,7 +367,7 @@ async def _autonomy_worker_loop() -> None:
             await asyncio.sleep(settings.autonomy_interval_sec)
             continue
         _AUTONOMY_IDLE_CYCLES = 0
-        queue_id, goal, provider, created_by, current_attempt, target_iterations = item
+        queue_id, goal, provider, created_by, current_attempt, target_iterations, current_priority = item
         try:
             goal_id = get_or_create_active_goal(goal, created_by)
             task_id = create_goal_task(goal_id, f"Auto cycle action for: {goal}", priority=1)
@@ -390,7 +391,11 @@ async def _autonomy_worker_loop() -> None:
             elif current_attempt >= target_iterations:
                 mark_queue_item_failed(queue_id, "Iteration limit reached without valid result")
             else:
-                requeue_item(queue_id, "No valid result yet; retrying")
+                # Exponential backoff with mild priority demotion for unstable tasks.
+                backoff_seconds = min(300, 2 ** min(current_attempt, 8))
+                requeue_item(queue_id, "No valid result yet; retrying with backoff", backoff_seconds=backoff_seconds)
+                if current_priority > 1:
+                    lower_queue_priority(queue_id)
             _AUTONOMY_ITERATIONS += 1
             _AUTONOMY_FAIL_STREAK = 0 if is_success else _AUTONOMY_FAIL_STREAK + 1
             save_audit_log(created_by, "autonomy_worker_cycle", "worker", f"queue_id={queue_id},run_id={run_id}")
@@ -693,8 +698,9 @@ async def admin_agent_queue(request: Request, _: None = Depends(require_admin)) 
             "created_by": created_by,
             "last_error": last_error,
             "created_at": created_at,
+            "next_retry_at": next_retry_at,
         }
-        for qid, goal, provider, status, priority, attempts, target_iterations, created_by, last_error, created_at in list_queue_items(100)
+        for qid, goal, provider, status, priority, attempts, target_iterations, created_by, last_error, created_at, next_retry_at in list_queue_items(100)
     ]
     return JSONResponse({"items": items})
 

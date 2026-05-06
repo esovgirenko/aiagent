@@ -120,6 +120,7 @@ def init_db() -> None:
                 priority INTEGER NOT NULL DEFAULT 1,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 target_iterations INTEGER NOT NULL DEFAULT 1,
+                next_retry_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 created_by TEXT NOT NULL,
                 last_error TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -140,6 +141,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE autonomy_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         if "target_iterations" not in qcols:
             conn.execute("ALTER TABLE autonomy_queue ADD COLUMN target_iterations INTEGER NOT NULL DEFAULT 1")
+        if "next_retry_at" not in qcols:
+            conn.execute("ALTER TABLE autonomy_queue ADD COLUMN next_retry_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         rcols = [r[1] for r in conn.execute("PRAGMA table_info(autonomous_runs)").fetchall()]
         if "result_text" not in rcols:
             conn.execute("ALTER TABLE autonomous_runs ADD COLUMN result_text TEXT NOT NULL DEFAULT ''")
@@ -422,13 +425,14 @@ def enqueue_autonomy_goal(
         return int(cur.lastrowid)
 
 
-def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str, int, int]]:
+def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str, int, int, int]]:
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             """
-            SELECT id, goal, provider, created_by, attempts, target_iterations
+            SELECT id, goal, provider, created_by, attempts, target_iterations, priority
             FROM autonomy_queue
             WHERE status = 'queued'
+              AND datetime(next_retry_at) <= datetime('now')
             ORDER BY priority DESC, id ASC
             LIMIT 1
             """
@@ -440,7 +444,7 @@ def fetch_next_queued_goal() -> Optional[Tuple[int, str, str, str, int, int]]:
             (int(row[0]),),
         )
         conn.commit()
-    return (int(row[0]), str(row[1]), str(row[2]), str(row[3]), int(row[4]) + 1, int(row[5]))
+    return (int(row[0]), str(row[1]), str(row[2]), str(row[3]), int(row[4]) + 1, int(row[5]), int(row[6]))
 
 
 def mark_queue_item_done(item_id: int) -> None:
@@ -458,20 +462,45 @@ def mark_queue_item_failed(item_id: int, error_text: str) -> None:
         conn.commit()
 
 
-def requeue_item(item_id: int, error_text: str = "") -> None:
+def requeue_item(item_id: int, error_text: str = "", backoff_seconds: int = 0) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        if backoff_seconds > 0:
+            conn.execute(
+                """
+                UPDATE autonomy_queue
+                SET status = 'queued',
+                    last_error = ?,
+                    next_retry_at = datetime('now', ?)
+                WHERE id = ?
+                """,
+                (error_text[:1000], f"+{int(backoff_seconds)} seconds", item_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE autonomy_queue
+                SET status = 'queued', last_error = ?, next_retry_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (error_text[:1000], item_id),
+            )
+        conn.commit()
+
+
+def lower_queue_priority(item_id: int) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "UPDATE autonomy_queue SET status = 'queued', last_error = ? WHERE id = ?",
-            (error_text[:1000], item_id),
+            "UPDATE autonomy_queue SET priority = CASE WHEN priority > 1 THEN priority - 1 ELSE 1 END WHERE id = ?",
+            (item_id,),
         )
         conn.commit()
 
 
-def list_queue_items(limit: int = 50) -> List[Tuple[int, str, str, str, int, int, int, str, str, str]]:
+def list_queue_items(limit: int = 50) -> List[Tuple[int, str, str, str, int, int, int, str, str, str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
             """
-            SELECT id, goal, provider, status, priority, attempts, target_iterations, created_by, last_error, created_at
+            SELECT id, goal, provider, status, priority, attempts, target_iterations, created_by, last_error, created_at, next_retry_at
             FROM autonomy_queue
             ORDER BY id DESC
             LIMIT ?
@@ -490,6 +519,7 @@ def list_queue_items(limit: int = 50) -> List[Tuple[int, str, str, str, int, int
             str(r[7]),
             str(r[8]),
             str(r[9]),
+            str(r[10]),
         )
         for r in rows
     ]
